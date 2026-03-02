@@ -7,7 +7,7 @@ and word lists used by the LocationMatcher algorithm. No logic lives here.
 An operations team can modify any value in this file without touching
 algorithm code. All values are imported by location_matcher.py.
 
-Author: novushq
+Author: Prafull
 Version: 1.0.0
 """
 
