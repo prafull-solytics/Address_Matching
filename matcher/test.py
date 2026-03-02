@@ -18,7 +18,7 @@ Assumes:
 import pytest
 import logging
 
-from sample1.location_matcher import LocationMatcher
+from matcher.location_matcher import LocationMatcher
 
 # Configure logging for test failures
 logging.basicConfig(
