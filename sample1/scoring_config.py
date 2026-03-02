@@ -45,6 +45,9 @@ class ScoringConfig:
     SUBSTRING_MATCH_BASE_SCORE: float = 0.55
     SUBSTRING_RESULT_IN_QUERY_SCORE: float = 0.65
     SUBSTRING_QUERY_IN_RESULT_SCORE: float = 0.55
+    SUBSTRING_RESULT_PREFIX_SUFFIX_MAX_SCORE: float = 0.58
+    SUBSTRING_RESULT_EMBEDDED_MAX_SCORE: float = 0.45
+    SUBSTRING_QUERY_IN_RESULT_MAX_SCORE: float = 0.40
     FALSE_POSITIVE_SUBSTRING_MIN_LENGTH: int = 4
     SHORT_RESULT_SUBSTRING_HALVE_THRESHOLD: int = 4
 
@@ -74,6 +77,14 @@ class ScoringConfig:
 
     # ── Stemming Match ───────────────────────────────────────────────────
     STEM_MATCH_SCORE: float = 0.70
+    COMPOUND_TOKEN_MATCH_SCORE: float = 0.85
+    FUZZY_EDIT_DISTANCE_CAPS: Dict[int, float] = field(default_factory=lambda: {
+        0: 0.95,
+        1: 0.90,
+        2: 0.82,
+        3: 0.75,
+    })
+    PARTIAL_PHONETIC_MATCH_MULTIPLIER: float = 0.65
 
 
 # ─────────────────────────────────────────────────────────────────────────────

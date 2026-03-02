@@ -610,19 +610,19 @@ class LocationMatcher:
         """
         Detect compound token: a single query token equals all result tokens joined.
         e.g. query=["guineabissau"], result=["guinea","bissau"] → "guineabissau"=="guinea"+"bissau"
-        Returns 0.85 (slightly below exact) to indicate a likely valid compound match.
+        Returns COMPOUND_TOKEN_MATCH_SCORE (slightly below exact) to indicate a likely valid compound match.
         """
         if len(query_tokens) != 1:
             return 0.0
         qt = query_tokens[0]
         concatenated = "".join(result_tokens)
         if qt == concatenated:
-            return 0.85
+            return self._cfg.COMPOUND_TOKEN_MATCH_SCORE
         # Also try fuzzy: allow minor spelling variation in the compound
         if len(concatenated) >= 4:
             jw = _jaro_winkler(qt, concatenated)
             if jw >= 0.90:
-                return 0.85 * jw
+                return self._cfg.COMPOUND_TOKEN_MATCH_SCORE * jw
         return 0.0
 
     # ── Token pair scoring ────────────────────────────────────────────────
@@ -634,7 +634,7 @@ class LocationMatcher:
         Priority ladder:
           1. Exact                     → 1.0
           2. Abbreviation match        → ABBREVIATION_MATCH_SCORE (0.88)
-          3. Alternate name match      → ALTERNATE_NAME_MATCH_SCORE (0.90)
+          3. Alternate name match      → ALTERNATE_NAME_MATCH_SCORE (0.82)
           4. Stem match (≥4 chars)     → STEM_MATCH_SCORE (0.70)
           5. Jaro-Winkler ≥ threshold  → scaled, hard cap 0.95
           6. Phonetic (Soundex+MPhn)   → PHONETIC_MATCH_SCORE (0.72)
@@ -680,8 +680,7 @@ class LocationMatcher:
                 min(edit_dist, cfg.MAX_TYPO_EDIT_DISTANCE), 0.0
             )
             # Cap decreases with edit distance: 0 edits→0.95, 1→0.90, 2→0.82, 3→0.75
-            edit_caps = {0: 0.95, 1: 0.90, 2: 0.82, 3: 0.75}
-            edit_cap = edit_caps.get(min(edit_dist, 3), 0.75)
+            edit_cap = cfg.FUZZY_EDIT_DISTANCE_CAPS.get(min(edit_dist, 3), 0.75)
             # Length-ratio dampening: when one token is much longer, reduce confidence
             len_ratio = min(len(query_token), len(result_token)) / max(len(query_token), len(result_token))
             length_factor = 0.7 + 0.3 * len_ratio  # 0.7 when very different, 1.0 when equal
@@ -704,11 +703,17 @@ class LocationMatcher:
             ratio = len(result_token) / len(query_token)
             if query_token.startswith(result_token) or query_token.endswith(result_token):
                 # Prefix/suffix match (franceville→france, koreans→korea): moderate score
-                sub_score = min(cfg.SUBSTRING_RESULT_IN_QUERY_SCORE * ratio * 1.6, 0.58)
+                sub_score = min(
+                    cfg.SUBSTRING_RESULT_IN_QUERY_SCORE * ratio * 1.6,
+                    cfg.SUBSTRING_RESULT_PREFIX_SUFFIX_MAX_SCORE,
+                )
             else:
                 # Embedded in middle (hirani→iran, indira→india): low-moderate score
                 depth = 1.0 if ratio > 0.75 else (0.75 if ratio > 0.5 else 0.45)
-                sub_score = min(cfg.SUBSTRING_RESULT_IN_QUERY_SCORE * ratio * depth, 0.45)
+                sub_score = min(
+                    cfg.SUBSTRING_RESULT_IN_QUERY_SCORE * ratio * depth,
+                    cfg.SUBSTRING_RESULT_EMBEDDED_MAX_SCORE,
+                )
             return sub_score, {"method": "substring_result_in_query", "ratio": round(ratio, 4)}
 
         # Substring: query_token ⊂ result  (e.g. "franc" inside "france")
@@ -718,7 +723,10 @@ class LocationMatcher:
             and query_token != result_token
         ):
             ratio = len(query_token) / len(result_token)
-            sub_score = min(cfg.SUBSTRING_QUERY_IN_RESULT_SCORE * ratio, 0.40)
+            sub_score = min(
+                cfg.SUBSTRING_QUERY_IN_RESULT_SCORE * ratio,
+                cfg.SUBSTRING_QUERY_IN_RESULT_MAX_SCORE,
+            )
             return sub_score, {"method": "substring_query_in_result", "ratio": round(ratio, 4)}
 
         return 0.0, {"method": "none"}
@@ -733,7 +741,7 @@ class LocationMatcher:
         if sdx and mtn:
             return self._cfg.PHONETIC_MATCH_SCORE
         if sdx or mtn:
-            return self._cfg.PHONETIC_MATCH_SCORE * 0.65
+            return self._cfg.PHONETIC_MATCH_SCORE * self._cfg.PARTIAL_PHONETIC_MATCH_MULTIPLIER
         return 0.0
 
     def _tokens_fuzzy_match(self, a: str, b: str) -> bool:
