@@ -64,43 +64,47 @@ from .scoring_config import (
 logger = logging.getLogger(__name__)
 
 # ═════════════════════════════════════════════════════════════════════════════
-# INTERNAL CONSTANTS
+# INTERNAL CONSTANTS  (sourced from scoring_config.DEFAULT_CONFIG)
+#
+# All tunable values live in scoring_config.py / ScoringConfig.
+# These module-level aliases exist so the algorithm code below can reference
+# short names without touching self._cfg on every call.
 # ═════════════════════════════════════════════════════════════════════════════
 
 # ── Score anchors ────────────────────────────────────────────────────────────
-EXACT_SCORE: float = 1.0
-ABBREVIATION_CAP: float = 0.88
-ALTERNATE_NAME_CAP: float = 0.82
-PHONETIC_FULL_SCORE: float = 0.72
-PHONETIC_PARTIAL_MULT: float = 0.65
-STEM_SCORE: float = 0.70
-COMPOUND_SCORE: float = 0.85
+EXACT_SCORE: float               = DEFAULT_CONFIG.EXACT_MATCH_SCORE
+ABBREVIATION_CAP: float          = DEFAULT_CONFIG.ABBREVIATION_MATCH_SCORE
+ALTERNATE_NAME_CAP: float        = DEFAULT_CONFIG.ALTERNATE_NAME_MATCH_SCORE
+PHONETIC_FULL_SCORE: float       = DEFAULT_CONFIG.PHONETIC_MATCH_SCORE
+PHONETIC_PARTIAL_MULT: float     = DEFAULT_CONFIG.PARTIAL_PHONETIC_MATCH_MULTIPLIER
+STEM_SCORE: float                = DEFAULT_CONFIG.STEM_MATCH_SCORE
+COMPOUND_SCORE: float            = DEFAULT_CONFIG.COMPOUND_TOKEN_MATCH_SCORE
 
 # ── Substring parameters ────────────────────────────────────────────────────
-SUBSTR_MIN_LEN: int = 4
-SUBSTR_RIQ_BASE: float = 0.65
-SUBSTR_PREFIX_SUFFIX_CAP: float = 0.58
-SUBSTR_EMBEDDED_CAP: float = 0.45
-SUBSTR_QIR_CAP: float = 0.40
-ELEVATED_SUBSTR_MAX: float = 0.85
+SUBSTR_MIN_LEN: int              = DEFAULT_CONFIG.FALSE_POSITIVE_SUBSTRING_MIN_LENGTH
+SUBSTR_RIQ_BASE: float           = DEFAULT_CONFIG.SUBSTRING_RESULT_IN_QUERY_SCORE
+SUBSTR_PREFIX_SUFFIX_CAP: float  = DEFAULT_CONFIG.SUBSTRING_RESULT_PREFIX_SUFFIX_MAX_SCORE
+SUBSTR_EMBEDDED_CAP: float       = DEFAULT_CONFIG.SUBSTRING_RESULT_EMBEDDED_MAX_SCORE
+SUBSTR_QIR_CAP: float            = DEFAULT_CONFIG.SUBSTRING_QUERY_IN_RESULT_MAX_SCORE
+ELEVATED_SUBSTR_MAX: float       = DEFAULT_CONFIG.ELEVATED_SUBSTRING_MAX_SCORE
 
 # ── Fuzzy / edit-distance parameters ────────────────────────────────────────
-JW_THRESHOLD: float = 0.82
-JW_WEIGHT: float = 0.91
-EDIT_CAPS: Dict[int, float] = {0: 0.95, 1: 0.90, 2: 0.82, 3: 0.75}
-EDIT_WEIGHTS: Dict[int, float] = {0: 1.00, 1: 0.88, 2: 0.75, 3: 0.55}
-MAX_EDIT_DIST: int = 3
+JW_THRESHOLD: float              = DEFAULT_CONFIG.FUZZY_MATCH_THRESHOLD
+JW_WEIGHT: float                 = DEFAULT_CONFIG.JARO_WINKLER_WEIGHT
+EDIT_CAPS: Dict[int, float]      = DEFAULT_CONFIG.FUZZY_EDIT_DISTANCE_CAPS
+EDIT_WEIGHTS: Dict[int, float]   = DEFAULT_CONFIG.TYPO_EDIT_DISTANCE_WEIGHTS
+MAX_EDIT_DIST: int               = DEFAULT_CONFIG.MAX_TYPO_EDIT_DISTANCE
 
 # ── Penalty caps/rates ──────────────────────────────────────────────────────
-REVERSED_ORDER_PENALTY: float = 0.22
-NOISE_PER_WORD: float = 0.30
-NOISE_MAX_PENALTY: float = 0.65
-DIR_MISMATCH_PENALTY: float = 0.30
-DIR_ABSENT_WEIGHT: float = 0.85
-COLLISION_PENALTY: float = 0.70
+REVERSED_ORDER_PENALTY: float    = DEFAULT_CONFIG.REVERSED_ORDER_PENALTY
+NOISE_PER_WORD: float            = DEFAULT_CONFIG.NOISE_WORD_PENALTY_PER_WORD
+NOISE_MAX_PENALTY: float         = DEFAULT_CONFIG.MULTI_TOKEN_NOISE_MAX_PENALTY
+DIR_MISMATCH_PENALTY: float      = DEFAULT_CONFIG.DIRECTIONAL_MISMATCH_PENALTY
+DIR_ABSENT_WEIGHT: float         = DEFAULT_CONFIG.DIRECTIONAL_WORD_WEIGHT
+COLLISION_PENALTY: float         = DEFAULT_CONFIG.COMMON_WORD_COLLISION_PENALTY
 
 # ── Token filtering ─────────────────────────────────────────────────────────
-MIN_TOKEN_LEN: int = 2
+MIN_TOKEN_LEN: int               = DEFAULT_CONFIG.MIN_TOKEN_LENGTH
 
 # ── Regex patterns ───────────────────────────────────────────────────────────
 _SPLIT_RE = re.compile(r"[/|\\-]+")
@@ -474,10 +478,13 @@ class LocationMatcher:
                 return STEM_SCORE, {"method": "stem_match"}
 
         # 5. Fuzzy (Jaro-Winkler + Levenshtein)
-        # Skip JW when result is a substring of query with low coverage
+        # Skip JW when result is a substring of query:
+        #   - always skip for prefix/suffix matches (pure containment, not a typo)
+        #   - skip for embedded matches with low coverage ratio (< 0.75)
+        _rt_in_qt = len(rt) >= SUBSTR_MIN_LEN and rt in qt
         skip_jw = (
-            (len(rt) >= SUBSTR_MIN_LEN and rt in qt
-             and len(rt) / len(qt) < 0.75)
+            (_rt_in_qt and (qt.startswith(rt) or qt.endswith(rt)))
+            or (_rt_in_qt and len(rt) / len(qt) < 0.75)
             or (len(qt) <= 2 and len(rt) >= 4)
         )
 
@@ -488,7 +495,11 @@ class LocationMatcher:
             ed_score = EDIT_WEIGHTS.get(ed_capped, 0.0)
             edit_cap = EDIT_CAPS.get(ed_capped, 0.75)
             len_ratio = min(len(qt), len(rt)) / max(len(qt), len(rt))
-            len_factor = 0.7 + 0.3 * len_ratio
+            # Don't dampen high-confidence single-edit matches
+            if ed == 1 and jw >= 0.90:
+                len_factor = 1.0
+            else:
+                len_factor = 0.7 + 0.3 * len_ratio
             fuzzy = min(
                 max(jw * JW_WEIGHT, ed_score * 0.9) * len_factor,
                 edit_cap,
@@ -496,12 +507,10 @@ class LocationMatcher:
             return fuzzy, {"method": "jaro_winkler", "jw": round(jw, 4),
                            "edit_distance": ed}
 
-        # 6. Phonetic
-        ph = self._phonetic_score(qt, rt)
-        if ph > 0.0:
-            return ph, {"method": "phonetic"}
-
-        # 7. Substring: result in query_token
+        # 6. Substring: result in query_token
+        # Checked BEFORE phonetic so that prefix/suffix containment (e.g. "parisi"→"paris",
+        # "american"→"america") routes through the elevated substring path in
+        # _aggregate_single rather than being captured (and capped) by phonetic.
         if len(rt) >= SUBSTR_MIN_LEN and rt in qt and qt != rt:
             ratio = len(rt) / len(qt)
             if qt.startswith(rt) or qt.endswith(rt):
@@ -510,6 +519,11 @@ class LocationMatcher:
                 depth = 1.0 if ratio > 0.75 else (0.75 if ratio > 0.5 else 0.45)
                 sub = min(SUBSTR_RIQ_BASE * ratio * depth, SUBSTR_EMBEDDED_CAP)
             return sub, {"method": "substring_result_in_query", "ratio": round(ratio, 4)}
+
+        # 7. Phonetic
+        ph = self._phonetic_score(qt, rt)
+        if ph > 0.0:
+            return ph, {"method": "phonetic"}
 
         # 8. Substring: query_token in result
         if len(qt) >= SUBSTR_MIN_LEN and qt in rt and qt != rt:
@@ -578,21 +592,28 @@ class LocationMatcher:
             if best_score >= 1.0:
                 break
 
-        # Elevated embedded substring path
+        # Elevated substring path — applies to both embedded AND prefix/suffix matches
+        # with sufficient overlap ratio (>= 0.55).
+        # Formula: quality = (1.0 + ratio) / 2.0
+        #   e.g. "iran" in "hirani"  (embedded, ratio=0.667) -> quality=0.833
+        #   e.g. "paris" in "dparis" (suffix,   ratio=0.833) -> quality=0.917, capped at 0.85
         if (best_detail.get("method") == "substring_result_in_query"
                 and best_detail.get("ratio", 0.0) >= 0.55
                 and len(result_token) >= SUBSTR_MIN_LEN):
             bqt = best_detail.get("matched_query_token", "")
-            is_embedded = (not bqt.startswith(result_token)
-                           and not bqt.endswith(result_token))
-            if is_embedded:
-                ratio = best_detail["ratio"]
-                quality = (1.0 + ratio) / 2.0
-                elevated = min(quality, ELEVATED_SUBSTR_MAX)
-                if elevated > best_score:
-                    best_score = elevated
-                    best_detail["elevated_quality"] = True
-                    best_detail["quality"] = round(quality, 4)
+            ratio = best_detail["ratio"]
+            quality = (1.0 + ratio) / 2.0
+            elevated = min(quality, ELEVATED_SUBSTR_MAX)
+            if elevated > best_score:
+                best_score = elevated
+                best_detail["elevated_quality"] = True
+                best_detail["quality"] = round(quality, 4)
+                is_embedded = (not bqt.startswith(result_token)
+                               and not bqt.endswith(result_token))
+                best_detail["substr_position"] = (
+                    "embedded" if is_embedded
+                    else ("prefix" if bqt.startswith(result_token) else "suffix")
+                )
 
         return best_score, best_detail
 
@@ -826,6 +847,10 @@ class LocationMatcher:
         for rd in result_dirs:
             if rd in query_set:
                 continue
+            # Also treat a fuzzy-matching query token as "present"
+            # e.g. "noth" fuzzy-matches "north" -> don't penalize
+            if any(_jw(qt, rd) >= JW_THRESHOLD for qt in qtoks):
+                continue
             if query_dirs:
                 score *= (1.0 - DIR_MISMATCH_PENALTY)
                 break
@@ -939,10 +964,26 @@ class LocationMatcher:
             )
         elif result_joined in COMMON_WORD_COLLISIONS:
             has_exact = any(r in raw_set for r in rt)
-            if not has_exact:
+            # Also treat prefix/suffix containment as "exact enough" — skip collision
+            # penalty when the result token is structurally embedded in a query token
+            # (e.g. "paris" as a suffix of "dparis" is not a random collision).
+            has_substr_match = (
+                not has_exact
+                and any(
+                    r in q and (q.startswith(r) or q.endswith(r))
+                    for r in rt
+                    for q in qt_raw
+                    if len(r) >= SUBSTR_MIN_LEN
+                )
+            )
+            if not has_exact and not has_substr_match:
                 adj *= (1.0 - COLLISION_PENALTY)
                 detail["penalties_applied"].append(
                     f"p2_collision_no_exact: '{result_joined}'"
+                )
+            elif has_substr_match:
+                detail["penalties_applied"].append(
+                    f"p2_collision_skipped_substr: '{result_joined}'"
                 )
 
         # ── Penalty 3: Abbreviation / alternate-name score cap ──────────

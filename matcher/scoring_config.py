@@ -35,13 +35,13 @@ class ScoringConfig:
     PHONETIC_MATCH_SCORE: float = 0.72
 
     # ── Penalty Factors ──────────────────────────────────────────────────
-    REVERSED_ORDER_PENALTY: float = 0.22
+    REVERSED_ORDER_PENALTY: float = 0.05
     NOISE_WORD_PENALTY_PER_WORD: float = 0.30
     MULTI_TOKEN_NOISE_MAX_PENALTY: float = 0.65
     DIRECTIONAL_MISMATCH_PENALTY: float = 0.30
     COMMON_WORD_COLLISION_PENALTY: float = 0.70
 
-    # ── Substring Match Scores ─────────────────────────��─────────────────
+    # ── Substring Match Scores ────────────────────────────────────────────
     SUBSTRING_MATCH_BASE_SCORE: float = 0.55
     SUBSTRING_RESULT_IN_QUERY_SCORE: float = 0.65
     SUBSTRING_QUERY_IN_RESULT_SCORE: float = 0.55
@@ -50,6 +50,7 @@ class ScoringConfig:
     SUBSTRING_QUERY_IN_RESULT_MAX_SCORE: float = 0.40
     FALSE_POSITIVE_SUBSTRING_MIN_LENGTH: int = 4
     SHORT_RESULT_SUBSTRING_HALVE_THRESHOLD: int = 4
+    ELEVATED_SUBSTRING_MAX_SCORE: float = 0.85
 
     # ── Token Coverage ───────────────────────────────────────────────────
     PARTIAL_TOKEN_COVERAGE_WEIGHT: float = 1.0
