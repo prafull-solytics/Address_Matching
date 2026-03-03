@@ -897,6 +897,9 @@ class TestEC25_MixedAddressPatterns:
         assert_score(score, 0.95, 1.0, "Delivery instruction → India")
 
     def test_po_box_with_country(self, matcher):
+        # P.O. Box tokens ("po", "box", "44") get filtered as noise,
+        # leaving only "france" — but the filtered-count triggers P5
+        # address-noise penalty (consistent with existing test_13_4)
         score = matcher.match("P.O. Box 44, France", "France")
         assert_score(score, 0.60, 0.70, "P.O. Box → France")
 
