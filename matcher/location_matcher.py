@@ -1,8 +1,23 @@
 """
-location_matcher.py — Fuzzy Location Name Matching Engine
+location_matcher.py — Fuzzy Location Name Matching Engine (v2)
 
 Matches a raw address query string against a location name (city/state/country)
 and returns a confidence score in [0.0, 1.0].
+
+Architecture (6 clean stages):
+  Stage 1: Normalize & tokenize
+  Stage 2: Build token features (abbreviation expansion, alternate names)
+  Stage 3: Pairwise token similarity (exact > abbrev > fuzzy > substring > phonetic)
+  Stage 4: Result-level aggregation (single-token MAX, multi-token coverage)
+  Stage 5: Contextual penalties (bounded, documented)
+  Stage 6: Clamp & return
+
+Design principles:
+  - No entity-type bias (city/state/country agnostic)
+  - Deterministic and auditable scoring
+  - Token-level max evidence logic
+  - Bounded penalties applied after evidence scoring
+  - All constants self-contained with clear grouping
 """
 
 import logging
@@ -11,24 +26,26 @@ import unicodedata
 from functools import lru_cache
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-import nltk
+# ── Optional dependency imports with safe fallbacks ──────────────────────────
+
 try:
     from nltk.stem import PorterStemmer
-except ImportError as e:
-    raise ImportError("NLTK is required. pip install nltk") from e
+    _STEMMER = PorterStemmer()
+except ImportError:
+    _STEMMER = None
 
 try:
-    nltk.data.find("corpora/stopwords")
-except LookupError:
-    try:
-        nltk.download("stopwords", quiet=True)
-    except OSError:
-        pass
+    from jellyfish import (
+        jaro_winkler_similarity as _jf_jw,
+        levenshtein_distance as _jf_lev,
+        metaphone as _jf_metaphone,
+        soundex as _jf_soundex,
+    )
+    _HAS_JELLYFISH = True
+except ImportError:
+    _HAS_JELLYFISH = False
 
-try:
-    from jellyfish import jaro_winkler_similarity, levenshtein_distance, metaphone, soundex
-except ImportError as e:
-    raise ImportError("jellyfish is required. pip install jellyfish") from e
+# ── Config imports ───────────────────────────────────────────────────────────
 
 from .scoring_config import (
     ABBREVIATION_EXEMPT_TOKENS,
@@ -46,364 +63,532 @@ from .scoring_config import (
 
 logger = logging.getLogger(__name__)
 
-_STEMMER = PorterStemmer()
-_STRIP_CHARS = set('.,"\'\u2018\u2019\u201c\u201d()[]#;:!?{}')
-_SPLIT_PATTERN = re.compile(r"[/|\\-]+")
-_PURE_NUMERIC = re.compile(r"^\d+$")
-# Alphanumeric noise: single letter + digits (b204) or digits + single letter (204b)
-_ALPHANUMERIC_NOISE = re.compile(r"^[a-z]\d+|^\d+[a-z]+$", re.IGNORECASE)
+# ═════════════════════════════════════════════════════════════════════════════
+# INTERNAL CONSTANTS
+# ═════════════════════════════════════════════════════════════════════════════
 
-# Maximum score for the elevated single-token embedded-substring path.
-# Used when a result token is embedded (not prefix/suffix) inside a query token
-# with high bidirectional overlap quality (e.g. "hirani" ↔ "iran" → ~0.83).
-_ELEVATED_SUBSTRING_MAX: float = 0.85
+# ── Score anchors ────────────────────────────────────────────────────────────
+EXACT_SCORE: float = 1.0
+ABBREVIATION_CAP: float = 0.88
+ALTERNATE_NAME_CAP: float = 0.82
+PHONETIC_FULL_SCORE: float = 0.72
+PHONETIC_PARTIAL_MULT: float = 0.65
+STEM_SCORE: float = 0.70
+COMPOUND_SCORE: float = 0.85
+
+# ── Substring parameters ────────────────────────────────────────────────────
+SUBSTR_MIN_LEN: int = 4
+SUBSTR_RIQ_BASE: float = 0.65
+SUBSTR_PREFIX_SUFFIX_CAP: float = 0.58
+SUBSTR_EMBEDDED_CAP: float = 0.45
+SUBSTR_QIR_CAP: float = 0.40
+ELEVATED_SUBSTR_MAX: float = 0.85
+
+# ── Fuzzy / edit-distance parameters ────────────────────────────────────────
+JW_THRESHOLD: float = 0.82
+JW_WEIGHT: float = 0.91
+EDIT_CAPS: Dict[int, float] = {0: 0.95, 1: 0.90, 2: 0.82, 3: 0.75}
+EDIT_WEIGHTS: Dict[int, float] = {0: 1.00, 1: 0.88, 2: 0.75, 3: 0.55}
+MAX_EDIT_DIST: int = 3
+
+# ── Penalty caps/rates ──────────────────────────────────────────────────────
+REVERSED_ORDER_PENALTY: float = 0.22
+NOISE_PER_WORD: float = 0.30
+NOISE_MAX_PENALTY: float = 0.65
+DIR_MISMATCH_PENALTY: float = 0.30
+DIR_ABSENT_WEIGHT: float = 0.85
+COLLISION_PENALTY: float = 0.70
+
+# ── Token filtering ─────────────────────────────────────────────────────────
+MIN_TOKEN_LEN: int = 2
+
+# ── Regex patterns ───────────────────────────────────────────────────────────
+_SPLIT_RE = re.compile(r"[/|\\-]+")
+_STRIP_CHARS = frozenset('.,"\'\u2018\u2019\u201c\u201d()[]#;:!?{}')
+_PURE_NUMERIC_RE = re.compile(r"^\d+$")
+_ALPHANUM_NOISE_RE = re.compile(r"^[a-z]\d+|^\d+[a-z]+$", re.IGNORECASE)
+
+# ── Administrative prefix words ──────────────────────────────────────────────
+_ADMIN_WORDS = frozenset({
+    "kingdom", "republic", "federation", "commonwealth",
+    "state", "province", "territory", "prefecture",
+})
+
+# ── Optional connectors in result names ──────────────────────────────────────
+_OPTIONAL_CONNECTORS = frozenset({"and", "the", "of", "al", "el"})
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# ═════════════════════════════════════════════════════════════════════════════
 # CACHED HELPERS
-# ─────────────────────────────────────────────────────────────────────────────
+# ═════════════════════════════════════════════════════════════════════════════
 
-@lru_cache(maxsize=2048)
+@lru_cache(maxsize=4096)
 def _normalize_unicode(text: str) -> str:
+    """NFD decomposition + strip combining marks + lowercase."""
     nfd = unicodedata.normalize("NFD", text)
     return "".join(ch for ch in nfd if unicodedata.category(ch) != "Mn").lower()
 
 
-@lru_cache(maxsize=2048)
-def _get_soundex(token: str) -> str:
-    try:
-        return soundex(token)
-    except Exception:
-        return ""
+@lru_cache(maxsize=4096)
+def _soundex(token: str) -> str:
+    if _HAS_JELLYFISH:
+        try:
+            return _jf_soundex(token)
+        except Exception:
+            return ""
+    return ""
 
 
-@lru_cache(maxsize=2048)
-def _get_metaphone(token: str) -> str:
-    try:
-        return metaphone(token)
-    except Exception:
-        return ""
+@lru_cache(maxsize=4096)
+def _metaphone(token: str) -> str:
+    if _HAS_JELLYFISH:
+        try:
+            return _jf_metaphone(token)
+        except Exception:
+            return ""
+    return ""
 
 
-@lru_cache(maxsize=2048)
-def _get_stem(token: str) -> str:
-    return _STEMMER.stem(token)
+@lru_cache(maxsize=4096)
+def _stem(token: str) -> str:
+    return _STEMMER.stem(token) if _STEMMER else token
 
 
-@lru_cache(maxsize=2048)
-def _jaro_winkler(a: str, b: str) -> float:
-    return jaro_winkler_similarity(a, b)
+try:
+    from difflib import SequenceMatcher as _SequenceMatcher
+except ImportError:
+    _SequenceMatcher = None  # type: ignore[misc,assignment]
 
 
-@lru_cache(maxsize=2048)
-def _levenshtein(a: str, b: str) -> int:
-    return levenshtein_distance(a, b)
+@lru_cache(maxsize=4096)
+def _jw(a: str, b: str) -> float:
+    """Jaro-Winkler similarity with fallback."""
+    if _HAS_JELLYFISH:
+        return _jf_jw(a, b)
+    if _SequenceMatcher is not None:
+        return _SequenceMatcher(None, a, b).ratio()
+    return 1.0 if a == b else 0.0
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# MAIN CLASS
-# ─────────────────────────────────────────────────────────────────────────────
+@lru_cache(maxsize=4096)
+def _lev(a: str, b: str) -> int:
+    """Levenshtein edit distance with fallback."""
+    if _HAS_JELLYFISH:
+        return _jf_lev(a, b)
+    la, lb = len(a), len(b)
+    if la == 0:
+        return lb
+    if lb == 0:
+        return la
+    prev = list(range(lb + 1))
+    for i in range(la):
+        curr = [i + 1] + [0] * lb
+        for j in range(lb):
+            cost = 0 if a[i] == b[j] else 1
+            curr[j + 1] = min(curr[j] + 1, prev[j + 1] + 1, prev[j] + cost)
+        prev = curr
+    return prev[lb]
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# LocationMatcher
+# ═════════════════════════════════════════════════════════════════════════════
 
 class LocationMatcher:
     """
-    Fuzzy location name matching engine. Returns score in [0.0, 1.0].
+    Fuzzy location name matching engine.
+    Returns a confidence score in [0.0, 1.0].
 
     Usage:
         matcher = LocationMatcher()
-        score = matcher.match("10, Green Apt, Iran", "Iran")    # → 1.0
-        score = matcher.match("20, Hirani Apt, Blore", "Iran")  # → ~0.4
+        score = matcher.match("10, Green Apt, Iran", "Iran")    # -> 1.0
+        debug = matcher.get_debug_breakdown("Hirani", "Iran")   # -> dict
     """
 
     def __init__(self, config: Optional[ScoringConfig] = None) -> None:
         self._cfg: ScoringConfig = config or DEFAULT_CONFIG
 
-    # ── Public API ────────────────────────────────────────────────────────
+    # ── Public API ───────────────────────────────────────────────────────
 
     def match(self, query: str, elastic_result: str) -> float:
-        """Returns float in [0.0, 1.0]. Raises TypeError if inputs are not strings."""
+        """Score match(query, result) -> float in [0.0, 1.0].
+        Raises TypeError if inputs are not strings."""
         self._validate(query, elastic_result)
-        score, _ = self._run_pipeline(query, elastic_result)
+        score, _ = self._pipeline(query, elastic_result)
         return score
 
     def get_debug_breakdown(self, query: str, elastic_result: str) -> Dict[str, Any]:
-        """Returns full scoring breakdown dict. Raises TypeError if inputs are not strings."""
+        """Full scoring breakdown for auditing."""
         self._validate(query, elastic_result)
-        score, debug = self._run_pipeline(query, elastic_result, debug_mode=True)
-        debug["final_score"] = score
-        return debug
+        score, dbg = self._pipeline(query, elastic_result, debug=True)
+        dbg["final_score"] = score
+        return dbg
 
-    def _validate(self, query: Any, elastic_result: Any) -> None:
+    # ── Validation ───────────────────────────────────────────────────────
+
+    @staticmethod
+    def _validate(query: Any, result: Any) -> None:
         if not isinstance(query, str):
             raise TypeError(f"query must be str, got {type(query).__name__}")
-        if not isinstance(elastic_result, str):
-            raise TypeError(f"elastic_result must be str, got {type(elastic_result).__name__}")
+        if not isinstance(result, str):
+            raise TypeError(f"elastic_result must be str, got {type(result).__name__}")
 
-    # ── Pipeline ──────────────────────────────────────────────────────────
+    # ═════════════════════════════════════════════════════════════════════
+    # PIPELINE
+    # ═════════════════════════════════════════════════════════════════════
 
-    def _run_pipeline(
-        self, query: str, elastic_result: str, debug_mode: bool = False
+    def _pipeline(
+        self, query: str, result: str, debug: bool = False
     ) -> Tuple[float, Dict[str, Any]]:
-        debug: Dict[str, Any] = {"raw_query": query, "raw_result": elastic_result} if debug_mode else {}
+        dbg: Dict[str, Any] = {"raw_query": query, "raw_result": result} if debug else {}
 
-        # Step 1 — Garbage detection
-        if self._is_garbage(query) or self._is_garbage(elastic_result):
-            if debug_mode:
-                debug["step1_garbage"] = True
-            return 0.0, debug
+        # ── Stage 1: Normalize & tokenize ────────────────────────────────
 
-        # Step 2 — Unicode normalisation
-        norm_query = _normalize_unicode(query)
-        norm_result = _normalize_unicode(elastic_result)
-        if debug_mode:
-            debug["step2_normalized"] = {"query": norm_query, "result": norm_result}
+        if self._is_garbage(query) or self._is_garbage(result):
+            if debug:
+                dbg["stage1_garbage"] = True
+            return 0.0, dbg
 
-        # Quick exact match after normalisation
-        if norm_query.strip() == norm_result.strip():
-            logger.info("Quick exact match after normalization → 1.0")
-            if debug_mode:
-                debug["quick_exact_match"] = True
-                debug["token_scores"] = [{"query_token": norm_query.strip(), "result_token": norm_result.strip(), "score": 1.0, "method": "exact"}]
-            return 1.0, debug
+        nq = _normalize_unicode(query)
+        nr = _normalize_unicode(result)
+        if debug:
+            dbg["stage1_normalized"] = {"query": nq, "result": nr}
 
-        # Step 3 — Clean punctuation (split on -/|\ , strip .,"'()[]etc)
-        clean_query = self._clean_punctuation(norm_query)
-        clean_result = self._clean_punctuation(norm_result)
-        if debug_mode:
-            debug["step3_cleaned"] = {"query": clean_query, "result": clean_result}
+        # Quick exact after normalization
+        if nq.strip() == nr.strip():
+            if debug:
+                dbg["quick_exact"] = True
+                dbg["token_scores"] = [{"query_token": nq.strip(),
+                                        "result_token": nr.strip(),
+                                        "score": 1.0, "method": "exact"}]
+            return 1.0, dbg
 
-        # Step 4 — Tokenise
-        query_tokens_raw = self._tokenize(clean_query, is_query=True)
-        result_tokens_raw = self._tokenize(clean_result, is_query=False)
-        # Count pre-filter tokens for context noise detection
-        query_prefilter_count = len(clean_query.split())
-        # Count tokens that were explicitly filtered out (numerics, alphanumeric noise, too-short)
-        query_filtered_count = query_prefilter_count - len(query_tokens_raw)
-        if debug_mode:
-            debug["step4_tokens_raw"] = {"query": query_tokens_raw, "result": result_tokens_raw}
+        cq = self._clean_punct(nq)
+        cr = self._clean_punct(nr)
 
-        # Step 5 — Stopword removal + dedup
-        query_tokens = self._dedup(self._remove_stopwords_query(query_tokens_raw, result_tokens_raw))
-        result_tokens = self._dedup(self._remove_stopwords_result(result_tokens_raw))
-        if debug_mode:
-            debug["step5_after_stopwords"] = {"query": query_tokens, "result": result_tokens}
+        qt_raw = self._tokenize(cq, is_query=True)
+        rt_raw = self._tokenize(cr, is_query=False)
+        q_prefilter = len(cq.split())
+        q_filtered = q_prefilter - len(qt_raw)
 
-        if not result_tokens or not query_tokens:
-            return 0.0, debug
+        qt = self._dedup(self._strip_stopwords_query(qt_raw, rt_raw))
+        rt = self._dedup(self._strip_stopwords_result(rt_raw))
+        if debug:
+            dbg["stage1_tokens"] = {"query": qt, "result": rt}
 
-        # Step 6 — Abbreviation expansion (query only)
-        expanded_query = self._expand_abbreviations(query_tokens)
-        if debug_mode:
-            debug["step6_abbreviation_expanded"] = expanded_query
+        if not rt or not qt:
+            return 0.0, dbg
 
-        # Step 7 — Alternate name mapping (query only)
-        enriched_query = self._apply_alternate_names(expanded_query)
-        if debug_mode:
-            debug["step7_alternate_names"] = enriched_query
+        # ── Stage 2: Build token features ────────────────────────────────
 
-        # Track whether any abbreviation or alternate-name expansion was used
-        has_abbrev_token = any(t in KNOWN_ABBREVIATIONS for t in query_tokens)
-        has_alt_token = any(t in KNOWN_ALTERNATE_NAMES for t in query_tokens)
+        expanded = self._expand_abbreviations(qt)
+        enriched = self._apply_alternate_names(expanded)
 
-        # Count administrative prefix words stripped from query
-        # (kingdom, republic, state, etc.) — these signal the query is a formal name,
-        # not a false positive. We apply a small reduction for the "noise".
-        _ADMIN_WORDS = frozenset({"kingdom", "republic", "federation", "commonwealth",
-                                   "state", "province", "territory", "prefecture"})
-        admin_stripped_count = sum(
-            1 for t in clean_query.split()
-            if t in _ADMIN_WORDS and t not in set(query_tokens)
+        has_abbrev = any(t in KNOWN_ABBREVIATIONS for t in qt)
+        has_alt = any(t in KNOWN_ALTERNATE_NAMES for t in qt)
+        admin_stripped = sum(
+            1 for t in cq.split()
+            if t in _ADMIN_WORDS and t not in set(qt)
         )
 
-        # Step 8 — Core scoring
-        if len(result_tokens) == 1:
-            raw_score, score_detail = self._score_single_token(
-                enriched_query, result_tokens[0], query_tokens_raw, query_tokens
-            )
+        if debug:
+            dbg["stage2_enriched"] = enriched
+
+        # ── Stage 4: Result-level aggregation ────────────────────────────
+
+        if len(rt) == 1:
+            raw, detail = self._aggregate_single(enriched, rt[0], qt_raw, qt)
         else:
-            raw_score, score_detail = self._score_multi_token(
-                enriched_query, result_tokens, query_tokens
-            )
-        if debug_mode:
-            debug["step8_raw_score"] = raw_score
-            debug["step8_score_detail"] = score_detail
+            raw, detail = self._aggregate_multi(enriched, rt, qt)
 
-        # Step 9 — False positive suppression + score caps
-        adjusted, fp_detail = self._suppress_false_positives(
-            raw_score, enriched_query, query_tokens, result_tokens,
-            query_tokens_raw, has_abbrev_token, has_alt_token,
-            query_prefilter_count, query_filtered_count, admin_stripped_count,
-            score_detail,
+        if debug:
+            dbg["stage4_raw"] = raw
+            dbg["stage4_detail"] = detail
+
+        # ── Stage 5: Contextual penalties ────────────────────────────────
+
+        adjusted, pen_detail = self._apply_penalties(
+            raw, enriched, qt, rt, qt_raw,
+            has_abbrev, has_alt,
+            q_prefilter, q_filtered,
+            admin_stripped, detail,
         )
-        if debug_mode:
-            debug["step9_adjusted_score"] = adjusted
-            debug["step9_fp_detail"] = fp_detail
 
-        # Step 10 — Clamp, floor, round
-        final = self._finalize(adjusted)
-        logger.info("Step 10: Final score for '%s' ↔ '%s' = %.4f", query, elastic_result, final)
-        if debug_mode:
-            debug["step10_final_score"] = final
-            # Build token_scores for test 24.4
+        if debug:
+            dbg["stage5_adjusted"] = adjusted
+            dbg["stage5_penalties"] = pen_detail
+
+        # ── Stage 6: Clamp & return ──────────────────────────────────────
+
+        final = self._clamp(adjusted)
+
+        if debug:
+            dbg["stage6_final"] = final
             token_scores = []
-            for qt in enriched_query:
-                for rt in result_tokens:
-                    s, d = self._score_token_pair(qt, rt)
+            for q in enriched:
+                for r in rt:
+                    s, d = self._token_similarity(q, r)
                     if s > 0:
                         token_scores.append({
-                            "query_token": qt,
-                            "result_token": rt,
+                            "query_token": q, "result_token": r,
                             "score": round(s, 4),
                             "method": d.get("method", "none"),
                         })
-            debug["token_scores"] = token_scores
-            debug["steps"] = {
-                "normalized": debug.get("step2_normalized"),
-                "tokens": debug.get("step5_after_stopwords"),
-                "raw_score": raw_score,
+            dbg["token_scores"] = token_scores
+            dbg["steps"] = {
+                "normalized": dbg.get("stage1_normalized"),
+                "tokens": dbg.get("stage1_tokens"),
+                "raw_score": raw,
                 "adjusted_score": adjusted,
             }
 
-        return final, debug
+        return final, dbg
 
-    # ── Step 1: Garbage ───────────────────────────────────────────────────
+    # ═════════════════════════════════════════════════════════════════════
+    # STAGE 1: NORMALIZE & TOKENIZE
+    # ═════════════════════════════════════════════════════════════════════
 
-    def _is_garbage(self, text: str) -> bool:
+    @staticmethod
+    def _is_garbage(text: str) -> bool:
+        """Detect empty, null-like, or pure-noise input."""
         if not text or not text.strip():
             return True
-        normalized = _normalize_unicode(text.strip())
-        if normalized in GARBAGE_TOKENS:
+        norm = _normalize_unicode(text.strip())
+        if norm in GARBAGE_TOKENS:
             return True
-        tokens = normalized.split()
-        meaningful = [t for t in tokens if t not in GARBAGE_TOKENS and not _PURE_NUMERIC.match(t)]
+        tokens = norm.split()
+        meaningful = [t for t in tokens
+                      if t not in GARBAGE_TOKENS and not _PURE_NUMERIC_RE.match(t)]
         return len(meaningful) == 0
 
-    # ── Step 3: Clean punctuation ─────────────────────────────────────────
+    @staticmethod
+    def _clean_punct(text: str) -> str:
+        """Split on delimiter chars and strip punctuation."""
+        out = _SPLIT_RE.sub(" ", text)
+        out = "".join(ch if ch not in _STRIP_CHARS else " " for ch in out)
+        return re.sub(r"\s+", " ", out).strip()
 
-    def _clean_punctuation(self, text: str) -> str:
-        result = _SPLIT_PATTERN.sub(" ", text)
-        result = "".join(ch if ch not in _STRIP_CHARS else " " for ch in result)
-        return re.sub(r"\s+", " ", result).strip()
-
-    # ── Step 4: Tokenise ──────────────────────────────────────────────────
-
-    def _tokenize(self, text: str, is_query: bool) -> List[str]:
-        min_len = self._cfg.MIN_TOKEN_LENGTH
-        out = []
-        for token in text.split():
-            if is_query and _PURE_NUMERIC.match(token):
+    @staticmethod
+    def _tokenize(text: str, is_query: bool) -> List[str]:
+        """Tokenize with filtering: remove numerics, alphanumeric noise, short tokens."""
+        out: List[str] = []
+        for tok in text.split():
+            if is_query and _PURE_NUMERIC_RE.match(tok):
                 continue
-            # Skip alphanumeric noise tokens from query (B204, SW1A etc.)
-            if is_query and _ALPHANUMERIC_NOISE.match(token) and token not in ABBREVIATION_EXEMPT_TOKENS:
+            if is_query and _ALPHANUM_NOISE_RE.match(tok) and tok not in ABBREVIATION_EXEMPT_TOKENS:
                 continue
-            if len(token) < min_len and token not in ABBREVIATION_EXEMPT_TOKENS:
+            if len(tok) < MIN_TOKEN_LEN and tok not in ABBREVIATION_EXEMPT_TOKENS:
                 continue
-            out.append(token)
+            out.append(tok)
         return out
 
-    # ── Step 5: Stopwords + dedup ─────────────────────────────────────────
+    @staticmethod
+    def _strip_stopwords_query(qtokens: List[str], rtokens: List[str]) -> List[str]:
+        """Remove address stopwords from query, protecting result tokens & directionals."""
+        protected = set(rtokens) | DIRECTIONAL_WORDS
+        return [t for t in qtokens if t not in STOPWORDS_ADDRESS or t in protected]
 
-    def _remove_stopwords_query(
-        self, query_tokens: List[str], result_tokens: List[str]
-    ) -> List[str]:
-        protected = set(result_tokens) | DIRECTIONAL_WORDS
-        return [t for t in query_tokens if t not in STOPWORDS_ADDRESS or t in protected]
+    @staticmethod
+    def _strip_stopwords_result(rtokens: List[str]) -> List[str]:
+        """Remove only result-specific stopwords (very conservative)."""
+        return [t for t in rtokens if t not in STOPWORDS_RESULT]
 
-    def _remove_stopwords_result(self, result_tokens: List[str]) -> List[str]:
-        return [t for t in result_tokens if t not in STOPWORDS_RESULT]
-
-    def _dedup(self, tokens: List[str]) -> List[str]:
+    @staticmethod
+    def _dedup(tokens: List[str]) -> List[str]:
+        """Deduplicate preserving order."""
         seen: Set[str] = set()
-        out = []
+        out: List[str] = []
         for t in tokens:
             if t not in seen:
                 seen.add(t)
                 out.append(t)
         return out
 
-    # ── Step 6: Abbreviation expansion ───────────────────────────────────
+    # ═════════════════════════════════════════════════════════════════════
+    # STAGE 2: TOKEN FEATURE EXPANSION
+    # ═════════════════════════════════════════════════════════════════════
 
-    def _expand_abbreviations(self, tokens: List[str]) -> List[str]:
+    @staticmethod
+    def _expand_abbreviations(tokens: List[str]) -> List[str]:
+        """Expand known abbreviations, adding expansion tokens."""
         expanded = list(tokens)
-        for token in tokens:
-            if token in KNOWN_ABBREVIATIONS:
-                expansion = KNOWN_ABBREVIATIONS[token]
-                for exp in (expansion if isinstance(expansion, list) else [expansion]):
-                    for sub in exp.split():
+        for tok in tokens:
+            if tok in KNOWN_ABBREVIATIONS:
+                exp = KNOWN_ABBREVIATIONS[tok]
+                for e in (exp if isinstance(exp, list) else [exp]):
+                    for sub in e.split():
                         if sub not in expanded:
                             expanded.append(sub)
         return expanded
 
-    # ── Step 7: Alternate names ───────────────────────────────────────────
-
-    def _apply_alternate_names(self, tokens: List[str]) -> List[str]:
+    @staticmethod
+    def _apply_alternate_names(tokens: List[str]) -> List[str]:
+        """Add alternate name expansions (e.g., bharat->india)."""
         enriched = list(tokens)
-        # Single-token alternate names only (e.g. bharat→india, peking→beijing)
-        for token in tokens:
-            if token in KNOWN_ALTERNATE_NAMES:
-                for sub in KNOWN_ALTERNATE_NAMES[token].split():
+        for tok in tokens:
+            if tok in KNOWN_ALTERNATE_NAMES:
+                for sub in KNOWN_ALTERNATE_NAMES[tok].split():
                     if sub not in enriched:
                         enriched.append(sub)
         return enriched
 
-    # ── Step 8a: Single-token result ─────────────────────────────────────
+    # ═════════════════════════════════════════════════════════════════════
+    # STAGE 3: PAIRWISE TOKEN SIMILARITY
+    # ═════════════════════════════════════════════════════════════════════
 
-    def _score_single_token(
+    def _token_similarity(
+        self, qt: str, rt: str
+    ) -> Tuple[float, Dict[str, Any]]:
+        """
+        Compute similarity between a single query token and result token.
+
+        Priority ladder (ordered evidence, best applicable wins):
+          1. Exact equality            -> 1.0
+          2. Abbreviation mapping      -> ABBREVIATION_CAP (0.88)
+          3. Alternate name mapping    -> ALTERNATE_NAME_CAP (0.82)
+          4. Stem match (>=4 chars)    -> STEM_SCORE (0.70)
+          5. Fuzzy (JW + edit dist)    -> bounded by edit caps
+          6. Phonetic (soundex+metaphone) -> PHONETIC_FULL_SCORE (0.72)
+          7. Substring: result in query -> bounded
+          8. Substring: query in result -> bounded
+        """
+        # 1. Exact
+        if qt == rt:
+            return 1.0, {"method": "exact"}
+
+        # 2. Abbreviation
+        if qt in KNOWN_ABBREVIATIONS:
+            exp = KNOWN_ABBREVIATIONS[qt]
+            for e in (exp if isinstance(exp, list) else [exp]):
+                if rt in e.split():
+                    return ABBREVIATION_CAP, {"method": "abbreviation", "expansion": e}
+
+        # 3. Alternate name
+        if qt in KNOWN_ALTERNATE_NAMES:
+            if rt in KNOWN_ALTERNATE_NAMES[qt].split():
+                return ALTERNATE_NAME_CAP, {"method": "alternate_name"}
+
+        # 4. Stem match
+        if len(qt) >= 4 and len(rt) >= 4:
+            if _stem(qt) == _stem(rt):
+                return STEM_SCORE, {"method": "stem_match"}
+
+        # 5. Fuzzy (Jaro-Winkler + Levenshtein)
+        # Skip JW when result is a substring of query with low coverage
+        skip_jw = (
+            (len(rt) >= SUBSTR_MIN_LEN and rt in qt
+             and len(rt) / len(qt) < 0.75)
+            or (len(qt) <= 2 and len(rt) >= 4)
+        )
+
+        jw = _jw(qt, rt)
+        if not skip_jw and jw >= JW_THRESHOLD:
+            ed = _lev(qt, rt)
+            ed_capped = min(ed, MAX_EDIT_DIST)
+            ed_score = EDIT_WEIGHTS.get(ed_capped, 0.0)
+            edit_cap = EDIT_CAPS.get(ed_capped, 0.75)
+            len_ratio = min(len(qt), len(rt)) / max(len(qt), len(rt))
+            len_factor = 0.7 + 0.3 * len_ratio
+            fuzzy = min(
+                max(jw * JW_WEIGHT, ed_score * 0.9) * len_factor,
+                edit_cap,
+            )
+            return fuzzy, {"method": "jaro_winkler", "jw": round(jw, 4),
+                           "edit_distance": ed}
+
+        # 6. Phonetic
+        ph = self._phonetic_score(qt, rt)
+        if ph > 0.0:
+            return ph, {"method": "phonetic"}
+
+        # 7. Substring: result in query_token
+        if len(rt) >= SUBSTR_MIN_LEN and rt in qt and qt != rt:
+            ratio = len(rt) / len(qt)
+            if qt.startswith(rt) or qt.endswith(rt):
+                sub = min(SUBSTR_RIQ_BASE * ratio * 1.6, SUBSTR_PREFIX_SUFFIX_CAP)
+            else:
+                depth = 1.0 if ratio > 0.75 else (0.75 if ratio > 0.5 else 0.45)
+                sub = min(SUBSTR_RIQ_BASE * ratio * depth, SUBSTR_EMBEDDED_CAP)
+            return sub, {"method": "substring_result_in_query", "ratio": round(ratio, 4)}
+
+        # 8. Substring: query_token in result
+        if len(qt) >= SUBSTR_MIN_LEN and qt in rt and qt != rt:
+            ratio = len(qt) / len(rt)
+            sub = min(SUBSTR_RIQ_BASE * ratio, SUBSTR_QIR_CAP)
+            return sub, {"method": "substring_query_in_result", "ratio": round(ratio, 4)}
+
+        return 0.0, {"method": "none"}
+
+    @staticmethod
+    def _phonetic_score(a: str, b: str) -> float:
+        """Phonetic similarity using Soundex + Metaphone."""
+        if len(a) < 3 or len(b) < 3:
+            return 0.0
+        sa, sb = _soundex(a), _soundex(b)
+        ma, mb = _metaphone(a), _metaphone(b)
+        sdx = bool(sa and sb and sa == sb)
+        mtn = bool(ma and mb and ma == mb)
+        if sdx and mtn:
+            return PHONETIC_FULL_SCORE
+        if sdx or mtn:
+            return PHONETIC_FULL_SCORE * PHONETIC_PARTIAL_MULT
+        return 0.0
+
+    def _tokens_fuzzy_match(self, a: str, b: str) -> bool:
+        """Quick check: do two tokens match (exact, abbreviation, alt-name, or fuzzy)?"""
+        if a == b:
+            return True
+        if a in KNOWN_ABBREVIATIONS:
+            exp = KNOWN_ABBREVIATIONS[a]
+            for e in (exp if isinstance(exp, list) else [exp]):
+                if b in e.split():
+                    return True
+        if a in KNOWN_ALTERNATE_NAMES and b in KNOWN_ALTERNATE_NAMES[a].split():
+            return True
+        return _jw(a, b) >= JW_THRESHOLD
+
+    # ═════════════════════════════════════════════════════════════════════
+    # STAGE 4: RESULT-LEVEL AGGREGATION
+    # ═════════════════════════════════════════════════════════════════════
+
+    def _aggregate_single(
         self,
         query_tokens: List[str],
         result_token: str,
-        query_tokens_raw: List[str],
-        query_tokens_clean: List[str],
+        qt_raw: List[str],
+        qt_clean: List[str],
     ) -> Tuple[float, Dict[str, Any]]:
         """
-        MAX strategy: best-matching query token determines the score.
-        Tracks which method produced the best score for downstream capping.
+        Single-token result: MAX strategy.
+        Best matching query token determines the score.
 
-        Elevated single-token path: when the best match is an embedded substring
-        (result fully inside a query token but NOT as a prefix/suffix) with a
-        high overlap ratio (≥ 0.55), compute a bidirectional quality score:
-            quality = mean(result_coverage=1.0, query_coverage=ratio)
-        This lifts cases like "hirani"↔"iran" (ratio≈0.667) toward ~0.80–0.85,
-        reflecting that the result token constitutes the dominant portion of the
-        query token and is fully matched.  The flag ``elevated_quality`` is set
-        in ``best_detail`` so that downstream Rule 1 penalty is skipped (the
-        quality weighting already accounts for the partial-token nature of the
-        match).
+        Elevated path: when the best match is an embedded substring with high
+        overlap ratio (>=0.55), compute bidirectional quality = (1.0 + ratio)/2.
+        This lifts cases like "hirani"->"iran" (ratio~0.667) to ~0.83.
         """
         best_score = 0.0
         best_detail: Dict[str, Any] = {}
 
         for qt in query_tokens:
-            score, detail = self._score_token_pair(qt, result_token)
-            if score > best_score:
-                best_score = score
-                best_detail = {
-                    "matched_query_token": qt,
-                    "result_token": result_token,
-                    **detail,
-                }
+            s, d = self._token_similarity(qt, result_token)
+            if s > best_score:
+                best_score = s
+                best_detail = {"matched_query_token": qt,
+                               "result_token": result_token, **d}
             if best_score >= 1.0:
                 break
 
-        # Elevated path: boost high-quality *embedded* substring matches.
-        # Only fires for result ⊂ query_token that is neither a prefix nor a
-        # suffix — those boundary-aligned cases are already scored separately.
-        if (
-            best_detail.get("method") == "substring_result_in_query"
-            and best_detail.get("ratio", 0.0) >= 0.55
-            and len(result_token) >= self._cfg.FALSE_POSITIVE_SUBSTRING_MIN_LENGTH
-        ):
+        # Elevated embedded substring path
+        if (best_detail.get("method") == "substring_result_in_query"
+                and best_detail.get("ratio", 0.0) >= 0.55
+                and len(result_token) >= SUBSTR_MIN_LEN):
             bqt = best_detail.get("matched_query_token", "")
-            is_embedded = (
-                not bqt.startswith(result_token)
-                and not bqt.endswith(result_token)
-            )
+            is_embedded = (not bqt.startswith(result_token)
+                           and not bqt.endswith(result_token))
             if is_embedded:
                 ratio = best_detail["ratio"]
-                # Bidirectional quality: result is fully covered (coverage=1.0);
-                # query token is partially covered (coverage=ratio).
-                # Mean of both gives a balanced confidence that rises with ratio.
                 quality = (1.0 + ratio) / 2.0
-                elevated = min(quality, _ELEVATED_SUBSTRING_MAX)
+                elevated = min(quality, ELEVATED_SUBSTR_MAX)
                 if elevated > best_score:
                     best_score = elevated
                     best_detail["elevated_quality"] = True
@@ -411,106 +596,96 @@ class LocationMatcher:
 
         return best_score, best_detail
 
-    # ── Step 8b: Multi-token result ───────────────────────────────────────
-
-    def _score_multi_token(
+    def _aggregate_multi(
         self,
         query_tokens: List[str],
         result_tokens: List[str],
-        query_tokens_clean: List[str],
+        qt_clean: List[str],
     ) -> Tuple[float, Dict[str, Any]]:
         """
-        Five sub-methods, best wins:
-          (a) Contiguous ordered        → up to 1.0
-          (b) Ordered with noise gaps   → penalised per noise word
-          (c) All tokens, wrong order   → reversed-order penalty
-          (d) K of M tokens matched     → coverage × avg × weight
-          (e) Per-result-token average  → capped by (b) when noise exists
-
-        Cap rule: when (b) finds all tokens with noise words, (e) cannot exceed (b).
-        This stops "North Hirani Korea" scoring 1.0 for "North Korea".
+        Multi-token result: best of six sub-strategies.
+          (a) Contiguous ordered match    -> up to 1.0
+          (b) Ordered with noise gaps     -> penalized per noise word
+          (c) All tokens, wrong order     -> reversed-order penalty
+          (d) Partial coverage            -> coverage x avg
+          (e) Per-result-token average    -> capped by (b)/(c)
+          (f) Compound match              -> single query token = concat of result
+        Then apply directional penalty.
         """
         detail: Dict[str, Any] = {"sub_scores": {}}
 
-        score_a = self._score_contiguous_ordered(query_tokens, result_tokens)
-        detail["sub_scores"]["a_contiguous"] = round(score_a, 4)
+        sa = self._sub_contiguous(query_tokens, result_tokens)
+        detail["sub_scores"]["a_contiguous"] = round(sa, 4)
 
-        score_b, noise_count = self._score_ordered_with_noise(query_tokens, result_tokens)
-        detail["sub_scores"]["b_ordered_noise"] = round(score_b, 4)
-        detail["sub_scores"]["b_noise_count"] = noise_count
+        sb, noise = self._sub_ordered_noise(query_tokens, result_tokens)
+        detail["sub_scores"]["b_ordered_noise"] = round(sb, 4)
+        detail["sub_scores"]["b_noise_count"] = noise
 
-        score_c = self._score_unordered(query_tokens, result_tokens)
-        detail["sub_scores"]["c_unordered"] = round(score_c, 4)
+        sc = self._sub_unordered(query_tokens, result_tokens)
+        detail["sub_scores"]["c_unordered"] = round(sc, 4)
 
-        score_d, k, m = self._score_partial_coverage(query_tokens, result_tokens)
-        detail["sub_scores"]["d_partial"] = round(score_d, 4)
+        sd, k, m = self._sub_partial(query_tokens, result_tokens)
+        detail["sub_scores"]["d_partial"] = round(sd, 4)
         detail["sub_scores"]["d_k_of_m"] = f"{k}/{m}"
 
-        score_e = self._score_per_result_token_avg(query_tokens, result_tokens)
-        if score_b > 0.0 and noise_count > 0:
-            # Cap score_d and score_e when noise tokens are present between result tokens.
-            # Without this, "North Hirani Korea → North Korea" scores 1.0 via score_d.
-            score_e = min(score_e, score_b)
-            score_d = min(score_d, score_b)
-        if score_c > 0.0:
-            # Cap score_d and score_e when tokens are in wrong order.
-            # Without this, "Korea North → North Korea" scores 1.0 via score_d.
-            score_e = min(score_e, score_c)
-            score_d = min(score_d, score_c)
-        detail["sub_scores"]["e_fuzzy"] = round(score_e, 4)
+        se = self._sub_per_result_avg(query_tokens, result_tokens)
+        # Cap when noise or wrong order
+        if sb > 0.0 and noise > 0:
+            se = min(se, sb)
+            sd = min(sd, sb)
+        if sc > 0.0:
+            se = min(se, sc)
+            sd = min(sd, sc)
+        detail["sub_scores"]["e_fuzzy"] = round(se, 4)
 
-        # (f) Compound match: single query token = all result tokens concatenated
-        #     "GuineaBissau" → ["guinea", "bissau"]: concat = "guineabissau" = query_token
-        score_f = self._score_compound_match(query_tokens, result_tokens)
-        detail["sub_scores"]["f_compound"] = round(score_f, 4)
+        sf = self._sub_compound(query_tokens, result_tokens)
+        detail["sub_scores"]["f_compound"] = round(sf, 4)
 
-        best = max(score_a, score_b, score_c, score_d, score_e, score_f)
+        best = max(sa, sb, sc, sd, se, sf)
         best_method = max(
-            [("a", score_a), ("b", score_b), ("c", score_c), ("d", score_d), ("e", score_e), ("f", score_f)],
+            [("a", sa), ("b", sb), ("c", sc), ("d", sd), ("e", se), ("f", sf)],
             key=lambda x: x[1],
         )[0]
         detail["best_sub_method"] = best_method
 
-        best = self._apply_directional_penalty(best, query_tokens, result_tokens)
+        best = self._directional_penalty(best, query_tokens, result_tokens)
         detail["after_directional_penalty"] = round(best, 4)
 
         return best, detail
 
-    # ── Sub-scoring methods ───────────────────────────────────────────────
+    # ── Multi-token sub-strategies ───────────────────────────────────────
 
-    def _score_contiguous_ordered(
-        self, query_tokens: List[str], result_tokens: List[str]
-    ) -> float:
-        r_len = len(result_tokens)
-        for i in range(len(query_tokens) - r_len + 1):
-            window = query_tokens[i: i + r_len]
-            if window == result_tokens:
+    def _sub_contiguous(self, qtoks: List[str], rtoks: List[str]) -> float:
+        """(a) All result tokens appear contiguously and in order in query."""
+        rlen = len(rtoks)
+        for i in range(len(qtoks) - rlen + 1):
+            window = qtoks[i: i + rlen]
+            if window == rtoks:
                 return 1.0
-            if all(self._tokens_fuzzy_match(w, r) for w, r in zip(window, result_tokens)):
-                # Use _score_token_pair for proper edit-cap + length-factor scoring
-                pair_scores = [
-                    self._score_token_pair(w, r)[0] if w != r else 1.0
-                    for w, r in zip(window, result_tokens)
+            if all(self._tokens_fuzzy_match(w, r) for w, r in zip(window, rtoks)):
+                scores = [
+                    self._token_similarity(w, r)[0] if w != r else 1.0
+                    for w, r in zip(window, rtoks)
                 ]
-                return min(pair_scores)
+                return min(scores)
         return 0.0
 
-    def _score_ordered_with_noise(
-        self, query_tokens: List[str], result_tokens: List[str]
+    def _sub_ordered_noise(
+        self, qtoks: List[str], rtoks: List[str]
     ) -> Tuple[float, int]:
-        cfg = self._cfg
+        """(b) All result tokens appear in order but with noise words between."""
         positions: List[int] = []
-        match_qualities: List[float] = []
-        search_start = 0
+        qualities: List[float] = []
+        start = 0
 
-        for rt in result_tokens:
+        for rt in rtoks:
             found = False
-            for i in range(search_start, len(query_tokens)):
-                if self._tokens_fuzzy_match(query_tokens[i], rt):
+            for i in range(start, len(qtoks)):
+                if self._tokens_fuzzy_match(qtoks[i], rt):
                     positions.append(i)
-                    q = _jaro_winkler(query_tokens[i], rt) if query_tokens[i] != rt else 1.0
-                    match_qualities.append(q)
-                    search_start = i + 1
+                    q = _jw(qtoks[i], rt) if qtoks[i] != rt else 1.0
+                    qualities.append(q)
+                    start = i + 1
                     found = True
                     break
             if not found:
@@ -521,568 +696,359 @@ class LocationMatcher:
             for idx in range(len(positions) - 1):
                 noise_count += positions[idx + 1] - positions[idx] - 1
 
+        avg_q = sum(qualities) / len(qualities)
         if noise_count == 0:
-            avg_q = sum(match_qualities) / len(match_qualities)
-            return 1.0 * avg_q, 0
+            return avg_q, 0
 
-        penalty = min(
-            noise_count * cfg.NOISE_WORD_PENALTY_PER_WORD,
-            cfg.MULTI_TOKEN_NOISE_MAX_PENALTY,
-        )
-        avg_quality = sum(match_qualities) / len(match_qualities)
-        return 1.0 * (1.0 - penalty) * avg_quality, noise_count
+        penalty = min(noise_count * NOISE_PER_WORD, NOISE_MAX_PENALTY)
+        return (1.0 - penalty) * avg_q, noise_count
 
-    def _score_unordered(
-        self, query_tokens: List[str], result_tokens: List[str]
-    ) -> float:
-        cfg = self._cfg
-        matched_positions: List[int] = []
+    def _sub_unordered(self, qtoks: List[str], rtoks: List[str]) -> float:
+        """(c) All result tokens matched but in wrong order -> reversed penalty."""
+        positions: List[int] = []
         used: Set[int] = set()
-        match_qualities: List[float] = []
+        qualities: List[float] = []
 
-        for rt in result_tokens:
+        for rt in rtoks:
             best_idx, best_sim = -1, 0.0
-            for i, qt in enumerate(query_tokens):
+            for i, qt in enumerate(qtoks):
                 if i in used:
                     continue
                 if qt == rt:
                     best_idx, best_sim = i, 1.0
                     break
-                sim = _jaro_winkler(qt, rt)
-                if sim >= cfg.FUZZY_MATCH_THRESHOLD and sim > best_sim:
+                sim = _jw(qt, rt)
+                if sim >= JW_THRESHOLD and sim > best_sim:
                     best_idx, best_sim = i, sim
             if best_idx == -1:
                 return 0.0
-            matched_positions.append(best_idx)
+            positions.append(best_idx)
             used.add(best_idx)
-            match_qualities.append(best_sim)
+            qualities.append(best_sim)
 
-        # If already in order, let (a)/(b) own it
-        if all(
-            matched_positions[i] < matched_positions[i + 1]
-            for i in range(len(matched_positions) - 1)
-        ):
+        if all(positions[i] < positions[i + 1] for i in range(len(positions) - 1)):
             return 0.0
 
-        avg_quality = sum(match_qualities) / len(match_qualities)
-        return 1.0 * (1.0 - cfg.REVERSED_ORDER_PENALTY) * avg_quality
+        avg_q = sum(qualities) / len(qualities)
+        return (1.0 - REVERSED_ORDER_PENALTY) * avg_q
 
-    def _score_partial_coverage(
-        self, query_tokens: List[str], result_tokens: List[str]
+    def _sub_partial(
+        self, qtoks: List[str], rtoks: List[str]
     ) -> Tuple[float, int, int]:
-        m = len(result_tokens)
-        matched_scores: List[float] = []
-
-        for rt in result_tokens:
+        """(d) K of M result tokens matched -> coverage x avg."""
+        m = len(rtoks)
+        matched: List[float] = []
+        for rt in rtoks:
             best = 0.0
-            for qt in query_tokens:
-                s, _ = self._score_token_pair(qt, rt)
+            for qt in qtoks:
+                s, _ = self._token_similarity(qt, rt)
                 if s > best:
                     best = s
             if best > 0.0:
-                matched_scores.append(best)
-
-        k = len(matched_scores)
+                matched.append(best)
+        k = len(matched)
         if k == 0:
             return 0.0, 0, m
         coverage = k / m
-        avg = sum(matched_scores) / k
-        return coverage * avg * self._cfg.PARTIAL_TOKEN_COVERAGE_WEIGHT, k, m
+        avg = sum(matched) / k
+        return coverage * avg, k, m
 
-    # Connector words in result names that are optional for matching
-    _OPTIONAL_RESULT_CONNECTORS = frozenset({"and", "the", "of", "al", "el"})
-
-    def _score_per_result_token_avg(
-        self, query_tokens: List[str], result_tokens: List[str]
-    ) -> float:
-        """Average of best-score per result token.
-        Connector tokens (and/the/of) in the result are treated as optional —
-        they don't penalise coverage when absent from the query.
-        """
+    def _sub_per_result_avg(self, qtoks: List[str], rtoks: List[str]) -> float:
+        """(e) Average of best-score per result token.
+        Optional connectors in result don't penalize coverage."""
         per_token: List[float] = []
-        optional_zeros = 0
-        for rt in result_tokens:
+        for rt in rtoks:
             best = 0.0
-            for qt in query_tokens:
-                s, _ = self._score_token_pair(qt, rt)
+            for qt in qtoks:
+                s, _ = self._token_similarity(qt, rt)
                 if s > best:
                     best = s
             per_token.append(best)
-            if best == 0.0 and rt in self._OPTIONAL_RESULT_CONNECTORS:
-                optional_zeros += 1
 
-        # Count truly missing tokens (exclude optional connectors with 0 score)
-        nonzero = [s for s in per_token if s > 0]
-        zero_non_optional = sum(
+        zero_non_opt = sum(
             1 for i, s in enumerate(per_token)
-            if s == 0.0 and result_tokens[i] not in self._OPTIONAL_RESULT_CONNECTORS
+            if s == 0.0 and rtoks[i] not in _OPTIONAL_CONNECTORS
         )
 
-        if zero_non_optional == 0:
-            # All mandatory tokens matched — average only over them
-            mandatory_scores = [
+        if zero_non_opt == 0:
+            mandatory = [
                 s for i, s in enumerate(per_token)
-                if result_tokens[i] not in self._OPTIONAL_RESULT_CONNECTORS or s > 0
+                if rtoks[i] not in _OPTIONAL_CONNECTORS or s > 0
             ]
-            base = sum(mandatory_scores) / len(mandatory_scores) if mandatory_scores else 0.0
-            # If any optional connectors were missing, slightly reduce
-            missing_optional = sum(
+            base = sum(mandatory) / len(mandatory) if mandatory else 0.0
+            missing_opt = sum(
                 1 for i, s in enumerate(per_token)
-                if s == 0.0 and result_tokens[i] in self._OPTIONAL_RESULT_CONNECTORS
+                if s == 0.0 and rtoks[i] in _OPTIONAL_CONNECTORS
             )
-            return base * (1.0 - 0.05 * missing_optional)
+            return base * (1.0 - 0.05 * missing_opt)
 
+        nonzero = [s for s in per_token if s > 0]
         if not nonzero:
             return 0.0
-        # Some mandatory tokens missing — penalise coverage
-        mandatory_total = sum(
-            1 for rt in result_tokens if rt not in self._OPTIONAL_RESULT_CONNECTORS
-        )
-        mandatory_matched = sum(
+
+        mand_total = sum(1 for rt in rtoks if rt not in _OPTIONAL_CONNECTORS)
+        mand_matched = sum(
             1 for i, s in enumerate(per_token)
-            if s > 0 and result_tokens[i] not in self._OPTIONAL_RESULT_CONNECTORS
+            if s > 0 and rtoks[i] not in _OPTIONAL_CONNECTORS
         )
-        coverage = mandatory_matched / mandatory_total if mandatory_total > 0 else 0.0
+        coverage = mand_matched / mand_total if mand_total > 0 else 0.0
         avg = sum(nonzero) / len(nonzero)
-        return coverage * avg * self._cfg.PARTIAL_TOKEN_COVERAGE_WEIGHT
+        return coverage * avg
 
-    def _score_compound_match(
-        self, query_tokens: List[str], result_tokens: List[str]
-    ) -> float:
-        """
-        Detect compound token: a single query token equals all result tokens joined.
-        e.g. query=["guineabissau"], result=["guinea","bissau"] → "guineabissau"=="guinea"+"bissau"
-        Returns COMPOUND_TOKEN_MATCH_SCORE (slightly below exact) to indicate a likely valid compound match.
-        """
-        if len(query_tokens) != 1:
+    def _sub_compound(self, qtoks: List[str], rtoks: List[str]) -> float:
+        """(f) Single query token equals all result tokens concatenated."""
+        if len(qtoks) != 1:
             return 0.0
-        qt = query_tokens[0]
-        concatenated = "".join(result_tokens)
-        if qt == concatenated:
-            return self._cfg.COMPOUND_TOKEN_MATCH_SCORE
-        # Also try fuzzy: allow minor spelling variation in the compound
-        if len(concatenated) >= 4:
-            jw = _jaro_winkler(qt, concatenated)
+        qt = qtoks[0]
+        concat = "".join(rtoks)
+        if qt == concat:
+            return COMPOUND_SCORE
+        if len(concat) >= 4:
+            jw = _jw(qt, concat)
             if jw >= 0.90:
-                return self._cfg.COMPOUND_TOKEN_MATCH_SCORE * jw
+                return COMPOUND_SCORE * jw
         return 0.0
 
-    # ── Token pair scoring ────────────────────────────────────────────────
+    # ── Directional penalty ──────────────────────────────────────────────
 
-    def _score_token_pair(
-        self, query_token: str, result_token: str
-    ) -> Tuple[float, Dict]:
-        """
-        Priority ladder:
-          1. Exact                     → 1.0
-          2. Abbreviation match        → ABBREVIATION_MATCH_SCORE (0.88)
-          3. Alternate name match      → ALTERNATE_NAME_MATCH_SCORE (0.82)
-          4. Stem match (≥4 chars)     → STEM_MATCH_SCORE (0.70)
-          5. Jaro-Winkler ≥ threshold  → scaled, hard cap 0.95
-          6. Phonetic (Soundex+MPhn)   → PHONETIC_MATCH_SCORE (0.72)
-          7. result ⊂ query_token      → penalised, max 0.45
-          8. query_token ⊂ result      → penalised, max 0.40
-        """
-        cfg = self._cfg
-
-        if query_token == result_token:
-            return 1.0, {"method": "exact"}
-
-        if query_token in KNOWN_ABBREVIATIONS:
-            expansion = KNOWN_ABBREVIATIONS[query_token]
-            for exp in (expansion if isinstance(expansion, list) else [expansion]):
-                if result_token in exp.split():
-                    return cfg.ABBREVIATION_MATCH_SCORE, {"method": "abbreviation", "expansion": exp}
-
-        if query_token in KNOWN_ALTERNATE_NAMES:
-            if result_token in KNOWN_ALTERNATE_NAMES[query_token].split():
-                return cfg.ALTERNATE_NAME_MATCH_SCORE, {"method": "alternate_name"}
-
-        if len(query_token) >= 4 and len(result_token) >= 4:
-            if _get_stem(query_token) == _get_stem(result_token):
-                return cfg.STEM_MATCH_SCORE, {"method": "stem_match"}
-
-        # Skip JW scoring when result is a prefix/substring of query AND tokens
-        # differ substantially in length — let substring scoring give a lower score.
-        # Also skip JW for very short query tokens against much longer result tokens.
-        _skip_jw = (
-            (
-                len(result_token) >= cfg.FALSE_POSITIVE_SUBSTRING_MIN_LENGTH
-                and result_token in query_token
-                and len(result_token) / len(query_token) < 0.75
-            ) or (
-                len(query_token) <= 2 and len(result_token) >= 4
-            )
-        )
-
-        jw = _jaro_winkler(query_token, result_token)
-        if not _skip_jw and jw >= cfg.FUZZY_MATCH_THRESHOLD:
-            edit_dist = _levenshtein(query_token, result_token)
-            ed_score = cfg.TYPO_EDIT_DISTANCE_WEIGHTS.get(
-                min(edit_dist, cfg.MAX_TYPO_EDIT_DISTANCE), 0.0
-            )
-            # Cap decreases with edit distance: 0 edits→0.95, 1→0.90, 2→0.82, 3→0.75
-            edit_cap = cfg.FUZZY_EDIT_DISTANCE_CAPS.get(min(edit_dist, 3), 0.75)
-            # Length-ratio dampening: when one token is much longer, reduce confidence
-            len_ratio = min(len(query_token), len(result_token)) / max(len(query_token), len(result_token))
-            length_factor = 0.7 + 0.3 * len_ratio  # 0.7 when very different, 1.0 when equal
-            fuzzy_score = min(
-                max(jw * cfg.JARO_WINKLER_WEIGHT, ed_score * 0.9) * length_factor,
-                edit_cap,
-            )
-            return fuzzy_score, {"method": "jaro_winkler", "jw": round(jw, 4), "edit_distance": edit_dist}
-
-        phonetic = self._phonetic_score(query_token, result_token)
-        if phonetic > 0.0:
-            return phonetic, {"method": "phonetic"}
-
-        # Substring: result ⊂ query_token  (e.g. "iran" inside "hirani")
-        if (
-            len(result_token) >= cfg.FALSE_POSITIVE_SUBSTRING_MIN_LENGTH
-            and result_token in query_token
-            and query_token != result_token
-        ):
-            ratio = len(result_token) / len(query_token)
-            if query_token.startswith(result_token) or query_token.endswith(result_token):
-                # Prefix/suffix match (franceville→france, koreans→korea): moderate score
-                sub_score = min(
-                    cfg.SUBSTRING_RESULT_IN_QUERY_SCORE * ratio * 1.6,
-                    cfg.SUBSTRING_RESULT_PREFIX_SUFFIX_MAX_SCORE,
-                )
-            else:
-                # Embedded in middle (hirani→iran, indira→india): low-moderate score
-                depth = 1.0 if ratio > 0.75 else (0.75 if ratio > 0.5 else 0.45)
-                sub_score = min(
-                    cfg.SUBSTRING_RESULT_IN_QUERY_SCORE * ratio * depth,
-                    cfg.SUBSTRING_RESULT_EMBEDDED_MAX_SCORE,
-                )
-            return sub_score, {"method": "substring_result_in_query", "ratio": round(ratio, 4)}
-
-        # Substring: query_token ⊂ result  (e.g. "franc" inside "france")
-        if (
-            len(query_token) >= cfg.FALSE_POSITIVE_SUBSTRING_MIN_LENGTH
-            and query_token in result_token
-            and query_token != result_token
-        ):
-            ratio = len(query_token) / len(result_token)
-            sub_score = min(
-                cfg.SUBSTRING_QUERY_IN_RESULT_SCORE * ratio,
-                cfg.SUBSTRING_QUERY_IN_RESULT_MAX_SCORE,
-            )
-            return sub_score, {"method": "substring_query_in_result", "ratio": round(ratio, 4)}
-
-        return 0.0, {"method": "none"}
-
-    def _phonetic_score(self, a: str, b: str) -> float:
-        if len(a) < 3 or len(b) < 3:
-            return 0.0
-        sa, sb = _get_soundex(a), _get_soundex(b)
-        ma, mb = _get_metaphone(a), _get_metaphone(b)
-        sdx = bool(sa and sb and sa == sb)
-        mtn = bool(ma and mb and ma == mb)
-        if sdx and mtn:
-            return self._cfg.PHONETIC_MATCH_SCORE
-        if sdx or mtn:
-            return self._cfg.PHONETIC_MATCH_SCORE * self._cfg.PARTIAL_PHONETIC_MATCH_MULTIPLIER
-        return 0.0
-
-    def _tokens_fuzzy_match(self, a: str, b: str) -> bool:
-        if a == b:
-            return True
-        if a in KNOWN_ABBREVIATIONS:
-            exp = KNOWN_ABBREVIATIONS[a]
-            for e in (exp if isinstance(exp, list) else [exp]):
-                if b in e.split():
-                    return True
-        if a in KNOWN_ALTERNATE_NAMES and b in KNOWN_ALTERNATE_NAMES[a].split():
-            return True
-        return _jaro_winkler(a, b) >= self._cfg.FUZZY_MATCH_THRESHOLD
-
-    # ── Directional penalty ───────────────────────────────────────────────
-
-    def _apply_directional_penalty(
-        self, score: float, query_tokens: List[str], result_tokens: List[str]
+    @staticmethod
+    def _directional_penalty(
+        score: float, qtoks: List[str], rtoks: List[str]
     ) -> float:
-        """
-        Only penalise when a result directional word is CONTRADICTED by a different
-        directional in the query. If the result directional is simply absent from the
-        query (no directional at all), apply only a mild reduction.
-        """
-        cfg = self._cfg
-        result_dirs = [t for t in result_tokens if t in DIRECTIONAL_WORDS]
+        """Penalize when a result directional is contradicted or absent."""
+        result_dirs = [t for t in rtoks if t in DIRECTIONAL_WORDS]
         if not result_dirs:
             return score
 
-        query_dirs = {t for t in query_tokens if t in DIRECTIONAL_WORDS}
-        query_set = set(query_tokens)
+        query_dirs = {t for t in qtoks if t in DIRECTIONAL_WORDS}
+        query_set = set(qtoks)
 
         for rd in result_dirs:
             if rd in query_set:
-                continue  # matched — no penalty
+                continue
             if query_dirs:
-                # A different directional is present → strong mismatch
-                score *= (1.0 - cfg.DIRECTIONAL_MISMATCH_PENALTY)
+                score *= (1.0 - DIR_MISMATCH_PENALTY)
                 break
             else:
-                # No directional in query → mild reduction
-                score *= cfg.DIRECTIONAL_WORD_WEIGHT
+                score *= DIR_ABSENT_WEIGHT
                 break
 
         return score
 
-    # ── Step 9: False positive suppression ───────────────────────────────
+    # ═════════════════════════════════════════════════════════════════════
+    # STAGE 5: CONTEXTUAL PENALTIES (bounded, documented)
+    # ═════════════════════════════════════════════════════════════════════
 
-    def _suppress_false_positives(
+    def _apply_penalties(
         self,
         score: float,
-        enriched_query: List[str],
-        query_tokens: List[str],
-        result_tokens: List[str],
-        query_tokens_raw: List[str],
-        has_abbrev_token: bool,
-        has_alt_token: bool,
-        query_prefilter_count: int = 1,
-        query_filtered_count: int = 0,
-        admin_stripped_count: int = 0,
-        score_detail: Optional[Dict[str, Any]] = None,
+        enriched: List[str],
+        qt: List[str],
+        rt: List[str],
+        qt_raw: List[str],
+        has_abbrev: bool,
+        has_alt: bool,
+        q_prefilter: int,
+        q_filtered: int,
+        admin_stripped: int,
+        score_detail: Optional[Dict[str, Any]],
     ) -> Tuple[float, Dict[str, Any]]:
         """
-        Rule 1 — Deep substring: result embedded in a longer query token → strong penalty.
-        Rule 2 — Common word collision: result is a known ambiguous word with context.
-        Rule 3 — Abbreviation/alternate-name cap: prevent inflated scores from expansions.
-        Rule 4 — Compound word split: "GuineaBissau" should match "Guinea-Bissau" at moderate score.
+        Apply bounded contextual penalties after evidence scoring.
 
-        ``score_detail`` (optional) carries flags from Step 8 scoring.  When
-        ``score_detail["elevated_quality"]`` is True the score was already
-        quality-weighted via the embedded-substring elevation path in
-        ``_score_single_token``, so Rule 1's embedded-substring penalty is
-        skipped to avoid double-penalising a deliberately elevated score.
+        Penalty 1: Deep substring — result embedded in longer query token
+                   (max multiplier: 0.30 for deep, 0.55 for shallow)
+        Penalty 1b: Near-miss token (1 edit, structurally different)
+                    (multiplier: 0.65, capped)
+        Penalty 2: Commercial/collision word context
+                    (max: COLLISION_PENALTY = 0.70)
+        Penalty 3: Abbreviation/alternate-name score cap
+        Penalty 4: Directional excess for single-token result
+                    (max: 0.30)
+        Penalty 5: Address-noise context dampening
+                    (max: 0.45 for collision, 0.40 for filtered, 0.20 for multi)
+        Penalty 6: Admin-prefix reduction
+                    (max: 0.10)
         """
-        cfg = self._cfg
         detail: Dict[str, Any] = {"penalties_applied": []}
-        adjusted = score
-        query_set = set(enriched_query)
+        adj = score
+        qset = set(enriched)
 
-        # Rule 1: Deep substring (single-token result only)
-        # Only applies when result is NOT a prefix of the query token AND score is high.
-        # This rule is designed to bring down inflated fuzzy/JW scores for tokens like
-        # "marine"→"iran" (JW≈0.85 but it's a false match). It does NOT further penalise
-        # already-low substring scores.
-        # Exception: when the score was produced by the elevated quality path
-        # (score_detail["elevated_quality"]=True), the quality weighting already
-        # accounts for the partial overlap — applying Rule 1 here would double-penalise.
-        if len(result_tokens) == 1 and adjusted >= 0.35:
-            rt = result_tokens[0]
-            if rt not in query_set:
-                for qt in enriched_query:
-                    if rt in qt and qt != rt and len(qt) > len(rt):
-                        is_prefix_match = qt.startswith(rt)
-                        is_suffix_match = qt.endswith(rt)
-                        if not is_prefix_match and not is_suffix_match:
+        # ── Penalty 1: Deep substring (single-token result) ─────────────
+        if len(rt) == 1 and adj >= 0.35:
+            r = rt[0]
+            if r not in qset:
+                for q in enriched:
+                    if r in q and q != r and len(q) > len(r):
+                        is_prefix = q.startswith(r)
+                        is_suffix = q.endswith(r)
+                        if not is_prefix and not is_suffix:
                             if score_detail is not None and score_detail.get("elevated_quality"):
-                                # Elevated quality path handled overlap; skip penalty.
                                 detail["penalties_applied"].append(
-                                    f"rule1_skipped_elevated: '{rt}' in '{qt}'"
+                                    f"p1_skipped_elevated: '{r}' in '{q}'"
                                 )
                             else:
-                                ratio = len(rt) / len(qt)
+                                ratio = len(r) / len(q)
                                 if ratio < 0.65:
-                                    adjusted *= 0.30
-                                    detail["penalties_applied"].append(f"deep_substring: '{rt}' in '{qt}' ratio={ratio:.2f}")
+                                    adj *= 0.30
+                                    detail["penalties_applied"].append(
+                                        f"p1_deep_substr: '{r}' in '{q}' ratio={ratio:.2f}"
+                                    )
                                 else:
-                                    adjusted *= 0.55
-                                    detail["penalties_applied"].append(f"shallow_substring: '{rt}' in '{qt}' ratio={ratio:.2f}")
+                                    adj *= 0.55
+                                    detail["penalties_applied"].append(
+                                        f"p1_shallow_substr: '{r}' in '{q}' ratio={ratio:.2f}"
+                                    )
                         break
 
-        # Rule 1b: Near-miss token penalty
-        # When single-token result is NOT found in query tokens BUT a query token is
-        # very similar (1 edit distance) AND longer, apply a penalty.
-        # "Indira"→"India": indira/india edit_dist=1, len(indira)>len(india) → penalty
-        # "Australiaa"→"Australia": australia IS prefix of australiaa → skip (it's a typo)
-        # "Iarn"→"Iran": iarn/iran edit_dist=2 → no penalty here
-        if len(result_tokens) == 1 and adjusted >= 0.45:
-            rt = result_tokens[0]
-            if rt not in query_set and len(rt) >= 4:
-                for qt in enriched_query:
-                    if qt != rt and len(qt) > len(rt):
-                        ed = _levenshtein(qt, rt)
+        # ── Penalty 1b: Near-miss token ─────────────────────────────────
+        if len(rt) == 1 and adj >= 0.45:
+            r = rt[0]
+            if r not in qset and len(r) >= 4:
+                for q in enriched:
+                    if q != r and len(q) > len(r):
+                        ed = _lev(q, r)
                         if ed == 1:
-                            length_diff = len(qt) - len(rt)
-                            # Skip if result is a prefix/suffix of query token (typo case)
-                            is_prefix = qt.startswith(rt)
-                            is_suffix = qt.endswith(rt)
-                            if length_diff >= 1 and not is_prefix and not is_suffix:
-                                # Reduced from 0.50 to 0.65 to better handle genuine
-                                # typos (e.g. "Tokoyo"→"Tokyo") while still penalising
-                                # truly different words (e.g. "Indira"→"India").
-                                adjusted *= 0.65
+                            diff = len(q) - len(r)
+                            if diff >= 1 and not q.startswith(r) and not q.endswith(r):
+                                adj *= 0.65
                                 detail["penalties_applied"].append(
-                                    f"near_miss: '{rt}' vs '{qt}' ed=1"
+                                    f"p1b_near_miss: '{r}' vs '{q}' ed=1"
                                 )
                                 break
-        # Rule 2: Commercial/Collision word detection
-        # Case B fires first: commercial context words in query → penalise ANY result
-        # Case A fires only: result in COMMON_WORD_COLLISIONS AND no commercial context
-        _ADDRESS_STRUCTURE_WORDS = frozenset({
-            "street", "st", "road", "rd", "avenue", "ave", "boulevard", "blvd",
-            "lane", "ln", "drive", "dr", "way", "highway", "hwy", "parkway", "pkwy",
-            "marg", "nagar",
-        })
-        has_address_structure = any(t in _ADDRESS_STRUCTURE_WORDS for t in query_tokens_raw)
-        result_joined = " ".join(result_tokens)
-        result_token_set = set(result_tokens)
-        raw_set = set(query_tokens_raw)
+
+        # ── Penalty 2: Commercial/collision word detection ──────────────
+        result_joined = " ".join(rt)
+        rt_set = set(rt)
+        raw_set = set(qt_raw)
 
         commercial_count = sum(
-            1 for t in query_tokens_raw
-            if t not in result_token_set and t in COMMERCIAL_CONTEXT_WORDS
+            1 for t in qt_raw
+            if t not in rt_set and t in COMMERCIAL_CONTEXT_WORDS
         )
 
         if commercial_count >= 2:
-            # Strong commercial: "China Cabinet Store", "Turkey sandwich shop", "Jordan shoes store"
-            adjusted *= (1.0 - cfg.COMMON_WORD_COLLISION_PENALTY)
-            detail["penalties_applied"].append(f"commercial_strong: count={commercial_count}")
-        elif commercial_count >= 1:
-            # Moderate commercial: one commercial word
-            adjusted *= (1.0 - cfg.COMMON_WORD_COLLISION_PENALTY * 0.70)
-            detail["penalties_applied"].append(f"commercial_moderate: count={commercial_count}")
-        elif result_joined in COMMON_WORD_COLLISIONS:
-            # Case A: known ambiguous word with no commercial context
-            has_exact_token = any(rt in raw_set for rt in result_tokens)
-            if not has_exact_token:
-                adjusted *= (1.0 - cfg.COMMON_WORD_COLLISION_PENALTY)
-                detail["penalties_applied"].append(f"collision_no_exact: '{result_joined}'")
-
-        # Rule 3: Abbreviation / alternate-name score cap
-        if has_abbrev_token or has_alt_token:
-            # Use appropriate cap: alt-names get ALTERNATE_NAME_MATCH_SCORE, abbrevs get ABBREVIATION_MATCH_SCORE
-            all_alt = all(t in KNOWN_ALTERNATE_NAMES for t in query_tokens if t not in KNOWN_ABBREVIATIONS)
-            cap = cfg.ALTERNATE_NAME_MATCH_SCORE if (has_alt_token and all_alt and not has_abbrev_token) else cfg.ABBREVIATION_MATCH_SCORE
-            result_set = set(result_tokens)
-            # Check if ANY query token (including abbreviation/alt-name tokens
-            # themselves) directly matches the result. E.g. query has "usa" and
-            # result is "usa" → direct match, so abbreviation cap should not apply.
-            has_direct_match = any(
-                t in result_set
-                for t in query_tokens
+            adj *= (1.0 - COLLISION_PENALTY)
+            detail["penalties_applied"].append(
+                f"p2_commercial_strong: count={commercial_count}"
             )
-            if not has_direct_match and adjusted > cap:
-                adjusted = cap
+        elif commercial_count >= 1:
+            adj *= (1.0 - COLLISION_PENALTY * 0.70)
+            detail["penalties_applied"].append(
+                f"p2_commercial_moderate: count={commercial_count}"
+            )
+        elif result_joined in COMMON_WORD_COLLISIONS:
+            has_exact = any(r in raw_set for r in rt)
+            if not has_exact:
+                adj *= (1.0 - COLLISION_PENALTY)
                 detail["penalties_applied"].append(
-                    f"abbrev_alt_cap: no direct token match, capped at {cap}"
+                    f"p2_collision_no_exact: '{result_joined}'"
                 )
 
-        # Rule 4: Excess regional context penalty (single-token result)
-        # Only applies when a directional word is ADJACENT to the result token,
-        # indicating it modifies the result (e.g. "South" + "Korea" → penalty).
-        # Non-adjacent directionals (e.g. "South" in "New South Wales, Australia")
-        # don't penalise the result token.
-        if len(result_tokens) == 1:
-            rt = result_tokens[0]
-            if rt in query_set:
+        # ── Penalty 3: Abbreviation / alternate-name score cap ──────────
+        if has_abbrev or has_alt:
+            all_alt = all(
+                t in KNOWN_ALTERNATE_NAMES
+                for t in qt if t not in KNOWN_ABBREVIATIONS
+            )
+            cap = (ALTERNATE_NAME_CAP if (has_alt and all_alt and not has_abbrev)
+                   else ABBREVIATION_CAP)
+            has_direct = any(t in set(rt) for t in qt)
+            if not has_direct and adj > cap:
+                adj = cap
+                detail["penalties_applied"].append(
+                    f"p3_abbrev_alt_cap: capped at {cap}"
+                )
+
+        # ── Penalty 4: Directional excess for single-token result ───────
+        if len(rt) == 1:
+            r = rt[0]
+            if r in qset:
                 try:
-                    rt_idx = query_tokens.index(rt)
+                    ridx = qt.index(r)
                 except ValueError:
-                    rt_idx = -1
-                if rt_idx >= 0:
-                    adjacent_directionals = [
-                        t for t in query_tokens
-                        if t != rt and t in DIRECTIONAL_WORDS
-                        and abs(query_tokens.index(t) - rt_idx) <= 1
+                    ridx = -1
+                if ridx >= 0:
+                    adj_dirs = [
+                        t for t in qt
+                        if t != r and t in DIRECTIONAL_WORDS
+                        and abs(qt.index(t) - ridx) <= 1
                     ]
-                    if adjacent_directionals:
-                        # Per-directional penalty (0.15) is lower than the old
-                        # blanket 0.30, with 0.30 cap for multiple directionals.
-                        penalty = min(len(adjacent_directionals) * 0.15, 0.30)
-                        adjusted *= (1.0 - penalty)
+                    if adj_dirs:
+                        pen = min(len(adj_dirs) * 0.15, 0.30)
+                        adj *= (1.0 - pen)
                         detail["penalties_applied"].append(
-                            f"directional_excess: {adjacent_directionals}, penalty={penalty:.2f}"
+                            f"p4_dir_excess: {adj_dirs}, penalty={pen:.2f}"
                         )
 
-        # Rule 5: Address-noise context dampening
-        # For single-token results: fires when numeric/alphanumeric tokens were filtered.
-        # For multi-token results: fires when match is in a much longer noisy query.
-        if adjusted >= 0.90:
-            if len(result_tokens) == 1 and len(query_tokens) == 1:
-                rt = result_tokens[0]
-                if rt in query_set and query_filtered_count >= 2:
-                    noise_penalty = min(query_filtered_count * 0.12, 0.40)
-                    adjusted *= (1.0 - noise_penalty)
+        # ── Penalty 5: Address-noise context dampening ──────────────────
+        if adj >= 0.90:
+            if len(rt) == 1 and len(qt) == 1:
+                r = rt[0]
+                if r in qset and q_filtered >= 2:
+                    pen = min(q_filtered * 0.12, 0.40)
+                    adj *= (1.0 - pen)
                     detail["penalties_applied"].append(
-                        f"address_noise: filtered={query_filtered_count}, penalty={noise_penalty:.2f}"
+                        f"p5_addr_noise: filtered={q_filtered}, penalty={pen:.2f}"
                     )
-            elif len(result_tokens) == 1:
-                # Single-token result in a multi-token query — penalise if the result is
-                # a known collision word AND there are extra non-stopword tokens around it
-                # that are NOT known geographic place names.
-                rt = result_tokens[0]
-                if rt in query_set and result_joined in COMMON_WORD_COLLISIONS:
-                    # Build a set of known place name values (from abbreviations + alt names)
-                    known_geo_values: Set[str] = set()
+            elif len(rt) == 1:
+                r = rt[0]
+                if r in qset and result_joined in COMMON_WORD_COLLISIONS:
+                    geo_vals: Set[str] = set()
                     for exp in KNOWN_ABBREVIATIONS.values():
                         for tok in (exp if isinstance(exp, list) else [exp]):
                             for w in tok.split():
-                                known_geo_values.add(w)
-                    for alt_val in KNOWN_ALTERNATE_NAMES.values():
-                        for w in alt_val.split():
-                            known_geo_values.add(w)
+                                geo_vals.add(w)
+                    for av in KNOWN_ALTERNATE_NAMES.values():
+                        for w in av.split():
+                            geo_vals.add(w)
 
-                    extra_clean = [
-                        t for t in query_tokens
-                        if t != rt
+                    extra = [
+                        t for t in qt
+                        if t != r
                         and t not in STOPWORDS_ADDRESS
                         and t not in DIRECTIONAL_WORDS
-                        and t not in known_geo_values  # skip known geo tokens like "beijing"
-                        and t not in KNOWN_ABBREVIATIONS   # skip geo abbreviations (usa, uk, il)
-                        and t not in KNOWN_ALTERNATE_NAMES  # skip alt-name keys (deutschland)
-                        and len(t) < 7               # skip long tokens likely to be place names
+                        and t not in geo_vals
+                        and t not in KNOWN_ABBREVIATIONS
+                        and t not in KNOWN_ALTERNATE_NAMES
+                        and len(t) < 7
                     ]
-                    if len(extra_clean) >= 2:
-                        # Require 2+ non-geo tokens to trigger collision penalty.
-                        # A single unknown token (e.g. a street name) is not
-                        # sufficient evidence of non-geographic context.
-                        collision_penalty = min(len(extra_clean) * 0.40, 0.45)
-                        adjusted *= (1.0 - collision_penalty)
+                    if len(extra) >= 2:
+                        pen = min(len(extra) * 0.40, 0.45)
+                        adj *= (1.0 - pen)
                         detail["penalties_applied"].append(
-                            f"collision_extra_context: '{rt}' extra={extra_clean}"
+                            f"p5_collision_extra: '{r}' extra={extra}"
                         )
-            elif len(result_tokens) >= 2:
-                # Multi-token result: penalise when query is much longer than result.
-                # Skip penalty when a perfect contiguous ordered match was found
-                # (score_a == 1.0) — the result tokens appear exactly in the query.
-                contiguous_score = (
+            elif len(rt) >= 2:
+                contiguous = (
                     score_detail.get("sub_scores", {}).get("a_contiguous", 0.0)
                     if score_detail else 0.0
                 )
-                if contiguous_score < 1.0:
-                    result_len = len(result_tokens)
-                    excess_tokens = query_prefilter_count - result_len
-                    if excess_tokens >= 4:
-                        noise_penalty = min((excess_tokens - 3) * 0.04, 0.20)
-                        adjusted *= (1.0 - noise_penalty)
+                if contiguous < 1.0:
+                    excess = q_prefilter - len(rt)
+                    if excess >= 4:
+                        pen = min((excess - 3) * 0.04, 0.20)
+                        adj *= (1.0 - pen)
                         detail["penalties_applied"].append(
-                            f"multi_token_noise: prefilter={query_prefilter_count}, result_len={result_len}, penalty={noise_penalty:.2f}"
+                            f"p5_multi_noise: prefilter={q_prefilter}, penalty={pen:.2f}"
                         )
 
-        # Rule 6: Admin-prefix penalty
-        # When formal admin words (kingdom, republic, state) were stripped from the query,
-        # apply a small reduction to indicate this is a formal name, not a perfect match.
-        # "Kingdom of Saudi Arabia → Saudi Arabia": kingdom stripped → slight reduction
-        # "Saudi Arabia → Saudi Arabia": nothing stripped → no reduction
-        if admin_stripped_count > 0 and adjusted >= 0.90:
-            admin_penalty = min(admin_stripped_count * 0.05, 0.10)
-            adjusted *= (1.0 - admin_penalty)
+        # ── Penalty 6: Admin-prefix reduction ───────────────────────────
+        if admin_stripped > 0 and adj >= 0.90:
+            pen = min(admin_stripped * 0.05, 0.10)
+            adj *= (1.0 - pen)
             detail["penalties_applied"].append(
-                f"admin_prefix: stripped={admin_stripped_count}, penalty={admin_penalty:.2f}"
+                f"p6_admin: stripped={admin_stripped}, penalty={pen:.2f}"
             )
 
-        return adjusted, detail
+        return adj, detail
 
-    # ── Step 10: Finalise ─────────────────────────────────────────────────
+    # ═════════════════════════════════════════════════════════════════════
+    # STAGE 6: CLAMP & RETURN
+    # ═════════════════════════════════════════════════════════════════════
 
-    def _finalize(self, score: float) -> float:
-        cfg = self._cfg
+    @staticmethod
+    def _clamp(score: float) -> float:
+        """Ensure final score in [0.0, 1.0], rounded to 4 decimal places."""
         clamped = max(0.0, min(1.0, score))
-        if clamped < cfg.SCORE_FLOOR:
-            return 0.0
-        return round(clamped, cfg.SCORE_PRECISION)
+        return round(clamped, 4)
