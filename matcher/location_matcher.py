@@ -912,7 +912,7 @@ class LocationMatcher:
                             is_prefix = qt.startswith(rt)
                             is_suffix = qt.endswith(rt)
                             if length_diff >= 1 and not is_prefix and not is_suffix:
-                                adjusted *= 0.50
+                                adjusted *= 0.65
                                 detail["penalties_applied"].append(
                                     f"near_miss: '{rt}' vs '{qt}' ed=1"
                                 )
@@ -949,24 +949,6 @@ class LocationMatcher:
             if not has_exact_token:
                 adjusted *= (1.0 - cfg.COMMON_WORD_COLLISION_PENALTY)
                 detail["penalties_applied"].append(f"collision_no_exact: '{result_joined}'")
-            elif not has_address_structure:
-                # No address structure → check for non-geo context
-                non_geo_raw = [
-                    t for t in query_tokens_raw
-                    if t not in result_token_set
-                    and not _PURE_NUMERIC.match(t)
-                    and t not in KNOWN_ABBREVIATIONS
-                    and t not in DIRECTIONAL_WORDS
-                    and t not in STOPWORDS_ADDRESS
-                ]
-                if len(non_geo_raw) >= 2:
-                    adjusted *= (1.0 - cfg.COMMON_WORD_COLLISION_PENALTY * 0.50)
-                    detail["penalties_applied"].append(f"collision_non_geo: '{result_joined}'")
-                elif len(non_geo_raw) >= 1:
-                    extra_context = [t for t in query_tokens_raw if t not in result_token_set]
-                    if len(extra_context) >= 2:
-                        adjusted *= (1.0 - cfg.COMMON_WORD_COLLISION_PENALTY * 0.25)
-                        detail["penalties_applied"].append(f"collision_mild: '{result_joined}'")
 
         # Rule 3: Abbreviation / alternate-name score cap
         if has_abbrev_token or has_alt_token:
@@ -985,23 +967,29 @@ class LocationMatcher:
                 )
 
         # Rule 4: Excess regional context penalty (single-token result)
-        # Only applies when directional words are present as extra tokens.
-        # Non-directional extra tokens (Bangalore, India) don't reduce confidence.
-        # "Western Australia → Australia": western is directional → penalty
-        # "MG Road, Bangalore, Karnataka → Karnataka": no directionals → no penalty
+        # Only applies when a directional word is ADJACENT to the result token,
+        # indicating it modifies the result (e.g. "South" + "Korea" → penalty).
+        # Non-adjacent directionals (e.g. "South" in "New South Wales, Australia")
+        # don't penalise the result token.
         if len(result_tokens) == 1:
             rt = result_tokens[0]
             if rt in query_set:
-                directional_extras = [
-                    t for t in query_tokens
-                    if t != rt and t in DIRECTIONAL_WORDS
-                ]
-                if directional_extras:
-                    penalty = min(len(directional_extras) * 0.30, 0.45)
-                    adjusted *= (1.0 - penalty)
-                    detail["penalties_applied"].append(
-                        f"directional_excess: {directional_extras}, penalty={penalty:.2f}"
-                    )
+                try:
+                    rt_idx = query_tokens.index(rt)
+                except ValueError:
+                    rt_idx = -1
+                if rt_idx >= 0:
+                    adjacent_directionals = [
+                        t for t in query_tokens
+                        if t != rt and t in DIRECTIONAL_WORDS
+                        and abs(query_tokens.index(t) - rt_idx) <= 1
+                    ]
+                    if adjacent_directionals:
+                        penalty = min(len(adjacent_directionals) * 0.15, 0.30)
+                        adjusted *= (1.0 - penalty)
+                        detail["penalties_applied"].append(
+                            f"directional_excess: {adjacent_directionals}, penalty={penalty:.2f}"
+                        )
 
         # Rule 5: Address-noise context dampening
         # For single-token results: fires when numeric/alphanumeric tokens were filtered.
@@ -1037,9 +1025,11 @@ class LocationMatcher:
                         and t not in STOPWORDS_ADDRESS
                         and t not in DIRECTIONAL_WORDS
                         and t not in known_geo_values  # skip known geo tokens like "beijing"
+                        and t not in KNOWN_ABBREVIATIONS   # skip geo abbreviations (usa, uk, il)
+                        and t not in KNOWN_ALTERNATE_NAMES  # skip alt-name keys (deutschland)
                         and len(t) < 7               # skip long tokens likely to be place names
                     ]
-                    if len(extra_clean) >= 1:
+                    if len(extra_clean) >= 2:
                         collision_penalty = min(len(extra_clean) * 0.40, 0.45)
                         adjusted *= (1.0 - collision_penalty)
                         detail["penalties_applied"].append(
