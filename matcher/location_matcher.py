@@ -53,6 +53,11 @@ _PURE_NUMERIC = re.compile(r"^\d+$")
 # Alphanumeric noise: single letter + digits (b204) or digits + single letter (204b)
 _ALPHANUMERIC_NOISE = re.compile(r"^[a-z]\d+|^\d+[a-z]+$", re.IGNORECASE)
 
+# Maximum score for the elevated single-token embedded-substring path.
+# Used when a result token is embedded (not prefix/suffix) inside a query token
+# with high bidirectional overlap quality (e.g. "hirani" ↔ "iran" → ~0.83).
+_ELEVATED_SUBSTRING_MAX: float = 0.85
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # CACHED HELPERS
@@ -226,7 +231,8 @@ class LocationMatcher:
         adjusted, fp_detail = self._suppress_false_positives(
             raw_score, enriched_query, query_tokens, result_tokens,
             query_tokens_raw, has_abbrev_token, has_alt_token,
-            query_prefilter_count, query_filtered_count, admin_stripped_count
+            query_prefilter_count, query_filtered_count, admin_stripped_count,
+            score_detail,
         )
         if debug_mode:
             debug["step9_adjusted_score"] = adjusted
@@ -351,6 +357,17 @@ class LocationMatcher:
         """
         MAX strategy: best-matching query token determines the score.
         Tracks which method produced the best score for downstream capping.
+
+        Elevated single-token path: when the best match is an embedded substring
+        (result fully inside a query token but NOT as a prefix/suffix) with a
+        high overlap ratio (≥ 0.55), compute a bidirectional quality score:
+            quality = mean(result_coverage=1.0, query_coverage=ratio)
+        This lifts cases like "hirani"↔"iran" (ratio≈0.667) toward ~0.80–0.85,
+        reflecting that the result token constitutes the dominant portion of the
+        query token and is fully matched.  The flag ``elevated_quality`` is set
+        in ``best_detail`` so that downstream Rule 1 penalty is skipped (the
+        quality weighting already accounts for the partial-token nature of the
+        match).
         """
         best_score = 0.0
         best_detail: Dict[str, Any] = {}
@@ -366,6 +383,31 @@ class LocationMatcher:
                 }
             if best_score >= 1.0:
                 break
+
+        # Elevated path: boost high-quality *embedded* substring matches.
+        # Only fires for result ⊂ query_token that is neither a prefix nor a
+        # suffix — those boundary-aligned cases are already scored separately.
+        if (
+            best_detail.get("method") == "substring_result_in_query"
+            and best_detail.get("ratio", 0.0) >= 0.55
+            and len(result_token) >= self._cfg.FALSE_POSITIVE_SUBSTRING_MIN_LENGTH
+        ):
+            bqt = best_detail.get("matched_query_token", "")
+            is_embedded = (
+                not bqt.startswith(result_token)
+                and not bqt.endswith(result_token)
+            )
+            if is_embedded:
+                ratio = best_detail["ratio"]
+                # Bidirectional quality: result is fully covered (coverage=1.0);
+                # query token is partially covered (coverage=ratio).
+                # Mean of both gives a balanced confidence that rises with ratio.
+                quality = (1.0 + ratio) / 2.0
+                elevated = min(quality, _ELEVATED_SUBSTRING_MAX)
+                if elevated > best_score:
+                    best_score = elevated
+                    best_detail["elevated_quality"] = True
+                    best_detail["quality"] = round(quality, 4)
 
         return best_score, best_detail
 
@@ -802,12 +844,19 @@ class LocationMatcher:
         query_prefilter_count: int = 1,
         query_filtered_count: int = 0,
         admin_stripped_count: int = 0,
+        score_detail: Optional[Dict[str, Any]] = None,
     ) -> Tuple[float, Dict[str, Any]]:
         """
         Rule 1 — Deep substring: result embedded in a longer query token → strong penalty.
         Rule 2 — Common word collision: result is a known ambiguous word with context.
         Rule 3 — Abbreviation/alternate-name cap: prevent inflated scores from expansions.
         Rule 4 — Compound word split: "GuineaBissau" should match "Guinea-Bissau" at moderate score.
+
+        ``score_detail`` (optional) carries flags from Step 8 scoring.  When
+        ``score_detail["elevated_quality"]`` is True the score was already
+        quality-weighted via the embedded-substring elevation path in
+        ``_score_single_token``, so Rule 1's embedded-substring penalty is
+        skipped to avoid double-penalising a deliberately elevated score.
         """
         cfg = self._cfg
         detail: Dict[str, Any] = {"penalties_applied": []}
@@ -819,6 +868,9 @@ class LocationMatcher:
         # This rule is designed to bring down inflated fuzzy/JW scores for tokens like
         # "marine"→"iran" (JW≈0.85 but it's a false match). It does NOT further penalise
         # already-low substring scores.
+        # Exception: when the score was produced by the elevated quality path
+        # (score_detail["elevated_quality"]=True), the quality weighting already
+        # accounts for the partial overlap — applying Rule 1 here would double-penalise.
         if len(result_tokens) == 1 and adjusted >= 0.35:
             rt = result_tokens[0]
             if rt not in query_set:
@@ -827,13 +879,19 @@ class LocationMatcher:
                         is_prefix_match = qt.startswith(rt)
                         is_suffix_match = qt.endswith(rt)
                         if not is_prefix_match and not is_suffix_match:
-                            ratio = len(rt) / len(qt)
-                            if ratio < 0.65:
-                                adjusted *= 0.30
-                                detail["penalties_applied"].append(f"deep_substring: '{rt}' in '{qt}' ratio={ratio:.2f}")
+                            if score_detail is not None and score_detail.get("elevated_quality"):
+                                # Elevated quality path handled overlap; skip penalty.
+                                detail["penalties_applied"].append(
+                                    f"rule1_skipped_elevated: '{rt}' in '{qt}'"
+                                )
                             else:
-                                adjusted *= 0.55
-                                detail["penalties_applied"].append(f"shallow_substring: '{rt}' in '{qt}' ratio={ratio:.2f}")
+                                ratio = len(rt) / len(qt)
+                                if ratio < 0.65:
+                                    adjusted *= 0.30
+                                    detail["penalties_applied"].append(f"deep_substring: '{rt}' in '{qt}' ratio={ratio:.2f}")
+                                else:
+                                    adjusted *= 0.55
+                                    detail["penalties_applied"].append(f"shallow_substring: '{rt}' in '{qt}' ratio={ratio:.2f}")
                         break
 
         # Rule 1b: Near-miss token penalty
