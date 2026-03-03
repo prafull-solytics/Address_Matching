@@ -1,37 +1,57 @@
 from matcher.location_matcher import LocationMatcher
 
 if __name__ == "__main__":
-    import sys
+    import asyncio
+    import time
 
     matcher = LocationMatcher()
 
     demo_cases = [
-        ("10, Green Apt, Iran",           "Iran",           0.95, 1.00),
-        ("20, Hirani Apt, Blore",         "Iran",           0.35, 0.50),
-        ("North Hirani Korea",            "North Korea",    0.55, 0.75),
-        ("Korea North",                   "North Korea",    0.72, 0.88),
-        ("IRAN",                          "Iran",           0.95, 1.00),
-        ("Marine Drive, India",           "Iran",           0.00, 0.15),
-        ("USA",                           "United States",  0.78, 0.92),
-        ("Réunion Island",                "Reunion",        0.90, 1.00),
-        ("Guinea-Bissau",                 "Guinea-Bissau",  0.95, 1.00),
-        ("Republic of Korea",             "South Korea",    0.40, 0.65),
-        ("Iarn",                          "Iran",           0.72, 0.88),
-        ("Georgia",                       "Georgia",        0.95, 1.00),
-        ("Turkey sandwich shop",          "Turkey",         0.00, 0.30),
-        ("Manhattan, New York, USA",      "New York",       0.90, 1.00),
-        ("North Korea",                   "South Korea",    0.35, 0.60),
+        # Exact and partial matches — Iran address
+        ("hirani", "Iran"),
+        ("10, Green Apt, Tehran, Iran", "Tehran"),
+        ("10, Green Apt, Tehran, Iran", "Iran"),
+        ("10, Green Apt, Tehran, Iran", "Mashhad"),
+        ("10, Green Apt, Tehran, Iran", "Germany"),
+        # US address
+        ("221B, Baker Street, Los Angeles, California, USA", "USA"),
+        ("221B, Baker Street, Los Angeles, California, USA", "California"),
+        ("221B, Baker Street, Los Angeles, California, USA", "Los Angeles"),
+        ("221B, Baker Street, Los Angeles, California, USA", "New York"),
+        ("221B, Baker Street, Los Angeles, California, USA", "Texas"),
+        ("15, Rue de Rivoli, Paris, France", "France"),
+        ("15, Rue de Rivoli, Paris, France", "Paris"),
+        ("15, Rue de Rivoli, Paris, France", "Lyon"),
+        ("15, Rue de Rivoli, Paris, France", "Germany"),
+        # Germany address
     ]
 
-    print("=" * 78)
-    print("  LOCATION MATCHER — DEMO RUNS")
-    print("=" * 78)
-    all_pass = True
-    for query, result, low, high in demo_cases:
-        s = matcher.match(query, result)
-        ok = low <= s <= high
-        if not ok:
-            all_pass = False
-        print(f"  {'✅' if ok else '❌'}  match({query!r:42s}, {result!r:20s}) = {s:.4f}  [{low:.2f}–{high:.2f}]")
-    print()
-    print("  ALL PASSED ✅" if all_pass else "  SOME FAILED ❌")
+    async def run_match(query, result, loop):
+        start = time.perf_counter()
+        s = await loop.run_in_executor(None, matcher.match, query, result)
+        elapsed = time.perf_counter() - start  # includes suspension time, not just executor time
+        return query, result, s, elapsed
+
+    async def main():
+        loop = asyncio.get_event_loop()
+        print("=" * 90)
+        print("  LOCATION MATCHER — DEMO RUNS (10 cases, same query)")
+        print("=" * 90)
+
+        total_start = time.perf_counter()
+        tasks = [run_match(query, result, loop) for query, result in demo_cases]
+        results = await asyncio.gather(*tasks)
+        total_elapsed = time.perf_counter() - total_start
+
+        final = 0
+        for query, result, s, elapsed in results:
+            print(
+                f"  match({query!r:25s}, {result!r:35s}) "
+                f"= {s:.4f}  | time: {elapsed*1000:.3f} ms"
+            )
+            final += elapsed * 1000
+
+        print(f"\nSum of individual times : {final:.3f} ms")
+        print(f"Total wall-clock time   : {total_elapsed*1000:.3f} ms")
+
+    asyncio.run(main())

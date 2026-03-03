@@ -1086,8 +1086,3 @@ class LocationMatcher:
         if clamped < cfg.SCORE_FLOOR:
             return 0.0
         return round(clamped, cfg.SCORE_PRECISION)
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# DEMO / MAIN
-# ─────────────────────────────────────────────────────────────────────────────
