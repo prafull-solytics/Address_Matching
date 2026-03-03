@@ -8,21 +8,21 @@ if __name__ == "__main__":
 
     demo_cases = [
         # Exact and partial matches — Iran address
-        ("hirani", "Iran"),
-        ("10, Green Apt, Tehran, Iran", "Tehran"),
-        ("10, Green Apt, Tehran, Iran", "Iran"),
-        ("10, Green Apt, Tehran, Iran", "Mashhad"),
-        ("10, Green Apt, Tehran, Iran", "Germany"),
-        # US address
-        ("221B, Baker Street, Los Angeles, California, USA", "USA"),
-        ("221B, Baker Street, Los Angeles, California, USA", "California"),
-        ("221B, Baker Street, Los Angeles, California, USA", "Los Angeles"),
-        ("221B, Baker Street, Los Angeles, California, USA", "New York"),
-        ("221B, Baker Street, Los Angeles, California, USA", "Texas"),
-        ("15, Rue de Rivoli, Paris, France", "France"),
-        ("15, Rue de Rivoli, Paris, France", "Paris"),
-        ("15, Rue de Rivoli, Paris, France", "Lyon"),
-        ("15, Rue de Rivoli, Paris, France", "Germany"),
+        # ("hirani", "Iran"),
+        # ("10, Green Apt, Tehran, Iran", "Tehran"),
+        # ("10, Green Apt, Tehran, Iran", "Iran"),
+        # ("10, Green Apt, Tehran, Iran", "Mashhad"),
+        # ("10, Green Apt, Tehran, Iran", "Germany"),
+        # # US address
+        # ("221B, Baker Street, Los Angeles, California, USA", "USA"),
+        # ("221B, Baker Street, Los Angeles, California, USA", "California"),
+        # ("221B, Baker Street, Los Angeles, California, USA", "Los Angeles"),
+        # ("221B, Baker Street, Los Angeles, California, USA", "New York"),
+        # ("221B, Baker Street, Los Angeles, California, USA", "Texas"),
+        # ("15, Rue de Rivoli, Paris, France", "France"),
+        ("DParis", "Paris"),
+        # ("15, Rue de Rivoli, Paris, France", "Lyon"),
+        # ("15, Rue de Rivoli, Paris, France", "Germany"),
         # Germany address
     ]
 
