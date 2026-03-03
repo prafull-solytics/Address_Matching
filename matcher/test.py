@@ -911,46 +911,46 @@ class TestCategory26_ExactComponentInFullAddress:
 
     FULL_ADDRESS = "221B, Baker Street, Los Angeles, California, USA"
 
-    def test_26_1_usa_exact_in_address(self, matcher):
+    def test_26_01_usa_exact_in_address(self, matcher):
         # "USA" appears exactly in the address → must be 1.0
         score = matcher.match(self.FULL_ADDRESS, "USA")
         assert_score(score, 0.95, 1.0, "26.1 USA exact token in full address")
 
-    def test_26_2_california_exact_in_address(self, matcher):
+    def test_26_02_california_exact_in_address(self, matcher):
         score = matcher.match(self.FULL_ADDRESS, "California")
         assert_score(score, 0.95, 1.0, "26.2 California exact token in full address")
 
-    def test_26_3_los_angeles_exact_in_address(self, matcher):
+    def test_26_03_los_angeles_exact_in_address(self, matcher):
         # "Los Angeles" appears contiguously in the address → must be 1.0
         score = matcher.match(self.FULL_ADDRESS, "Los Angeles")
         assert_score(score, 0.95, 1.0, "26.3 Los Angeles exact contiguous match in full address")
 
-    def test_26_4_new_york_not_in_address(self, matcher):
+    def test_26_04_new_york_not_in_address(self, matcher):
         # "New York" does NOT appear in the address → must be 0.0
         score = matcher.match(self.FULL_ADDRESS, "New York")
         assert_score(score, 0.0, 0.05, "26.4 New York not in address → zero")
 
-    def test_26_5_texas_not_in_address(self, matcher):
+    def test_26_05_texas_not_in_address(self, matcher):
         # "Texas" does NOT appear in the address → must be 0.0
         score = matcher.match(self.FULL_ADDRESS, "Texas")
         assert_score(score, 0.0, 0.05, "26.5 Texas not in address → zero")
 
-    def test_26_6_usa_abbreviation_vs_united_states(self, matcher):
+    def test_26_06_usa_abbreviation_vs_united_states(self, matcher):
         # "USA" in address should still map to "United States" via abbreviation
         # but at a capped abbreviation score, NOT 1.0
         score = matcher.match(self.FULL_ADDRESS, "United States")
         assert_score(score, 0.78, 0.92, "26.6 USA abbreviation → United States capped")
 
-    def test_26_7_india_full_address_exact(self, matcher):
+    def test_26_07_india_full_address_exact(self, matcher):
         # India exact token in a long Indian address
         score = matcher.match("204, MG Road, Bangalore, Karnataka, India", "India")
         assert_score(score, 0.95, 1.0, "26.7 India exact in full Indian address")
 
-    def test_26_8_karnataka_exact_in_address(self, matcher):
+    def test_26_08_karnataka_exact_in_address(self, matcher):
         score = matcher.match("204, MG Road, Bangalore, Karnataka, India", "Karnataka")
         assert_score(score, 0.95, 1.0, "26.8 Karnataka exact in full Indian address")
 
-    def test_26_9_multi_token_exact_in_long_address(self, matcher):
+    def test_26_09_multi_token_exact_in_long_address(self, matcher):
         # "New York" appears contiguously in a long address
         score = matcher.match("123 Broadway, Manhattan, New York, NY, USA", "New York")
         assert_score(score, 0.95, 1.0, "26.9 New York exact contiguous in long US address")
@@ -1436,7 +1436,7 @@ class TestCategory31_AbbreviationExactCoexist:
 
     def test_31_12(self, matcher):
         score = matcher.match("Dubai, UAE", "United Arab Emirates")
-        assert_score(score, 0.80, 0.92, "31.12 UAE → UAE abbreviation capped")
+        assert_score(score, 0.80, 0.92, "31.12 UAE → United Arab Emirates abbreviation capped")
 
     def test_31_13(self, matcher):
         score = matcher.match("Seoul, S. Korea", "South Korea")

@@ -912,6 +912,9 @@ class LocationMatcher:
                             is_prefix = qt.startswith(rt)
                             is_suffix = qt.endswith(rt)
                             if length_diff >= 1 and not is_prefix and not is_suffix:
+                                # Reduced from 0.50 to 0.65 to better handle genuine
+                                # typos (e.g. "Tokoyo"→"Tokyo") while still penalising
+                                # truly different words (e.g. "Indira"→"India").
                                 adjusted *= 0.65
                                 detail["penalties_applied"].append(
                                     f"near_miss: '{rt}' vs '{qt}' ed=1"
@@ -956,6 +959,9 @@ class LocationMatcher:
             all_alt = all(t in KNOWN_ALTERNATE_NAMES for t in query_tokens if t not in KNOWN_ABBREVIATIONS)
             cap = cfg.ALTERNATE_NAME_MATCH_SCORE if (has_alt_token and all_alt and not has_abbrev_token) else cfg.ABBREVIATION_MATCH_SCORE
             result_set = set(result_tokens)
+            # Check if ANY query token (including abbreviation/alt-name tokens
+            # themselves) directly matches the result. E.g. query has "usa" and
+            # result is "usa" → direct match, so abbreviation cap should not apply.
             has_direct_match = any(
                 t in result_set
                 for t in query_tokens
@@ -985,6 +991,8 @@ class LocationMatcher:
                         and abs(query_tokens.index(t) - rt_idx) <= 1
                     ]
                     if adjacent_directionals:
+                        # Per-directional penalty (0.15) is lower than the old
+                        # blanket 0.30, with 0.30 cap for multiple directionals.
                         penalty = min(len(adjacent_directionals) * 0.15, 0.30)
                         adjusted *= (1.0 - penalty)
                         detail["penalties_applied"].append(
@@ -1030,6 +1038,9 @@ class LocationMatcher:
                         and len(t) < 7               # skip long tokens likely to be place names
                     ]
                     if len(extra_clean) >= 2:
+                        # Require 2+ non-geo tokens to trigger collision penalty.
+                        # A single unknown token (e.g. a street name) is not
+                        # sufficient evidence of non-geographic context.
                         collision_penalty = min(len(extra_clean) * 0.40, 0.45)
                         adjusted *= (1.0 - collision_penalty)
                         detail["penalties_applied"].append(
