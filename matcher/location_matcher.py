@@ -977,7 +977,6 @@ class LocationMatcher:
             has_direct_match = any(
                 t in result_set
                 for t in query_tokens
-                if t not in KNOWN_ABBREVIATIONS and t not in KNOWN_ALTERNATE_NAMES
             )
             if not has_direct_match and adjusted > cap:
                 adjusted = cap
@@ -1047,15 +1046,22 @@ class LocationMatcher:
                             f"collision_extra_context: '{rt}' extra={extra_clean}"
                         )
             elif len(result_tokens) >= 2:
-                # Multi-token result: penalise when query is much longer than result
-                result_len = len(result_tokens)
-                excess_tokens = query_prefilter_count - result_len
-                if excess_tokens >= 4:
-                    noise_penalty = min((excess_tokens - 3) * 0.04, 0.20)
-                    adjusted *= (1.0 - noise_penalty)
-                    detail["penalties_applied"].append(
-                        f"multi_token_noise: prefilter={query_prefilter_count}, result_len={result_len}, penalty={noise_penalty:.2f}"
-                    )
+                # Multi-token result: penalise when query is much longer than result.
+                # Skip penalty when a perfect contiguous ordered match was found
+                # (score_a == 1.0) — the result tokens appear exactly in the query.
+                contiguous_score = (
+                    score_detail.get("sub_scores", {}).get("a_contiguous", 0.0)
+                    if score_detail else 0.0
+                )
+                if contiguous_score < 1.0:
+                    result_len = len(result_tokens)
+                    excess_tokens = query_prefilter_count - result_len
+                    if excess_tokens >= 4:
+                        noise_penalty = min((excess_tokens - 3) * 0.04, 0.20)
+                        adjusted *= (1.0 - noise_penalty)
+                        detail["penalties_applied"].append(
+                            f"multi_token_noise: prefilter={query_prefilter_count}, result_len={result_len}, penalty={noise_penalty:.2f}"
+                        )
 
         # Rule 6: Admin-prefix penalty
         # When formal admin words (kingdom, republic, state) were stripped from the query,

@@ -826,7 +826,7 @@ class TestCategory23_RealWorldAddresses:
 
     def test_23_5_messy_international(self, matcher):
         score = matcher.match("apt 5b, block C, near metro, North Korea zone", "North Korea")
-        assert_score(score, 0.72, 0.92, "23.5 Messy address with North Korea")
+        assert_score(score, 0.95, 1.0, "23.5 Messy address with North Korea — exact contiguous match")
 
     def test_23_6_chinese_city_english(self, matcher):
         score = matcher.match("No. 1 Changan Ave, Beijing, China", "China")
@@ -899,3 +899,68 @@ class TestCategory25_StopwordHandling:
         # "and" should NOT be stripped from "Bosnia and Herzegovina" result
         score = matcher.match("Bosnia and Herzegovina", "Bosnia and Herzegovina")
         assert_score(score, 0.92, 1.0, "25.7 'and' preserved in official result name")
+
+
+# ══════════════════════════════════════════════
+# CATEGORY 26 — Exact Component in Full Address
+# ══════════════════════════════════════════════
+# When a location component exists exactly in an address (after normalization),
+# the score must be 1.0 — regardless of how many other tokens surround it.
+
+class TestCategory26_ExactComponentInFullAddress:
+
+    FULL_ADDRESS = "221B, Baker Street, Los Angeles, California, USA"
+
+    def test_26_1_usa_exact_in_address(self, matcher):
+        # "USA" appears exactly in the address → must be 1.0
+        score = matcher.match(self.FULL_ADDRESS, "USA")
+        assert_score(score, 0.95, 1.0, "26.1 USA exact token in full address")
+
+    def test_26_2_california_exact_in_address(self, matcher):
+        score = matcher.match(self.FULL_ADDRESS, "California")
+        assert_score(score, 0.95, 1.0, "26.2 California exact token in full address")
+
+    def test_26_3_los_angeles_exact_in_address(self, matcher):
+        # "Los Angeles" appears contiguously in the address → must be 1.0
+        score = matcher.match(self.FULL_ADDRESS, "Los Angeles")
+        assert_score(score, 0.95, 1.0, "26.3 Los Angeles exact contiguous match in full address")
+
+    def test_26_4_new_york_not_in_address(self, matcher):
+        # "New York" does NOT appear in the address → must be 0.0
+        score = matcher.match(self.FULL_ADDRESS, "New York")
+        assert_score(score, 0.0, 0.05, "26.4 New York not in address → zero")
+
+    def test_26_5_texas_not_in_address(self, matcher):
+        # "Texas" does NOT appear in the address → must be 0.0
+        score = matcher.match(self.FULL_ADDRESS, "Texas")
+        assert_score(score, 0.0, 0.05, "26.5 Texas not in address → zero")
+
+    def test_26_6_usa_abbreviation_vs_united_states(self, matcher):
+        # "USA" in address should still map to "United States" via abbreviation
+        # but at a capped abbreviation score, NOT 1.0
+        score = matcher.match(self.FULL_ADDRESS, "United States")
+        assert_score(score, 0.78, 0.92, "26.6 USA abbreviation → United States capped")
+
+    def test_26_7_india_full_address_exact(self, matcher):
+        # India exact token in a long Indian address
+        score = matcher.match("204, MG Road, Bangalore, Karnataka, India", "India")
+        assert_score(score, 0.95, 1.0, "26.7 India exact in full Indian address")
+
+    def test_26_8_karnataka_exact_in_address(self, matcher):
+        score = matcher.match("204, MG Road, Bangalore, Karnataka, India", "Karnataka")
+        assert_score(score, 0.95, 1.0, "26.8 Karnataka exact in full Indian address")
+
+    def test_26_9_multi_token_exact_in_long_address(self, matcher):
+        # "New York" appears contiguously in a long address
+        score = matcher.match("123 Broadway, Manhattan, New York, NY, USA", "New York")
+        assert_score(score, 0.95, 1.0, "26.9 New York exact contiguous in long US address")
+
+    def test_26_10_max_scoring_strategy(self, matcher):
+        # If a result token matches multiple query tokens with different scores,
+        # the maximum score should be taken
+        # "usa" matches "usa" exactly (1.0) even though it's also an abbreviation
+        score_exact = matcher.match("Texas, USA", "USA")
+        score_abbrev = matcher.match("USA", "United States")
+        assert score_exact > score_abbrev, (
+            "26.10 Exact 'USA' token must beat abbreviation-only expansion"
+        )
