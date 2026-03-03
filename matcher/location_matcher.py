@@ -1,5 +1,5 @@
 """
-location_matcher.py  —  Fuzzy Location Name Matching Engine (v2)
+location_matcher.py — Fuzzy Location Name Matching Engine (v2)
 
 Matches a raw address query string against a location name (city/state/country)
 and returns a confidence score in [0.0, 1.0].
@@ -154,13 +154,20 @@ def _stem(token: str) -> str:
     return _STEMMER.stem(token) if _STEMMER else token
 
 
+try:
+    from difflib import SequenceMatcher as _SequenceMatcher
+except ImportError:
+    _SequenceMatcher = None  # type: ignore[misc,assignment]
+
+
 @lru_cache(maxsize=4096)
 def _jw(a: str, b: str) -> float:
     """Jaro-Winkler similarity with fallback."""
     if _HAS_JELLYFISH:
         return _jf_jw(a, b)
-    from difflib import SequenceMatcher
-    return SequenceMatcher(None, a, b).ratio()
+    if _SequenceMatcher is not None:
+        return _SequenceMatcher(None, a, b).ratio()
+    return 1.0 if a == b else 0.0
 
 
 @lru_cache(maxsize=4096)
