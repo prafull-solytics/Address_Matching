@@ -18,6 +18,7 @@ the matcher's fuzzy / phonetic stages can be evaluated properly.
 No expected scores are stored here — this file is purely a data source.
 """
 
+from matcher.location_matcher import score_with_variants
 from matcher.location_matcher import LocationMatcher
 
 # ---------------------------------------------------------------------------
@@ -1080,6 +1081,32 @@ TEST_CASES = [
 
 
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Helper: parse the comma-separated elastic result string into (name, aliases)
+# ---------------------------------------------------------------------------
+
+def _parse_elastic(elastic_result: str):
+    """Split 'Name, Alias1, Alias2, ...' into (name, [alias1, alias2, ...])."""
+    parts = [p.strip() for p in elastic_result.split(",") if p.strip()]
+    name = parts[0] if parts else ""
+    aliases = parts[1:] if len(parts) > 1 else []
+    return name, aliases
+
+
+# ---------------------------------------------------------------------------
+# Quick runner — prints (index, score, best_variant, query, elastic_result)
+# ---------------------------------------------------------------------------
+
+def run_all(verbose: bool = False):
+    results = []
+    for i, (query, elastic_result) in enumerate(TEST_CASES, start=1):
+        name, aliases = _parse_elastic(elastic_result)
+        score, debug = score_with_variants(query, name, aliases=aliases)
+        results.append((i, query, elastic_result, score, debug["best_variant"]))
+        if verbose:
+            print(
+                f"[{i:03d}] score={score:.4f} best={debug['best_variant']!r:20s} | "
+                f"{query[:55]!r}"
 # Quick runner — prints (index, score, query, elastic_result) for all 200
 # ---------------------------------------------------------------------------
 

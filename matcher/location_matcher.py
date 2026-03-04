@@ -23,6 +23,7 @@ Design principles:
 import logging
 import re
 import unicodedata
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from functools import lru_cache
 from typing import Any, Dict, List, Optional, Set, Tuple
 
@@ -101,6 +102,7 @@ NOISE_PER_WORD: float            = DEFAULT_CONFIG.NOISE_WORD_PENALTY_PER_WORD
 NOISE_MAX_PENALTY: float         = DEFAULT_CONFIG.MULTI_TOKEN_NOISE_MAX_PENALTY
 DIR_MISMATCH_PENALTY: float      = DEFAULT_CONFIG.DIRECTIONAL_MISMATCH_PENALTY
 DIR_ABSENT_WEIGHT: float         = DEFAULT_CONFIG.DIRECTIONAL_WORD_WEIGHT
+DIR_ABSENT_FROM_RESULT: float    = DEFAULT_CONFIG.DIRECTIONAL_ABSENT_FROM_RESULT_WEIGHT
 COLLISION_PENALTY: float         = DEFAULT_CONFIG.COMMON_WORD_COLLISION_PENALTY
 
 # ── Token filtering ─────────────────────────────────────────────────────────
@@ -852,10 +854,12 @@ class LocationMatcher:
             if any(_jw(qt, rd) >= JW_THRESHOLD for qt in qtoks):
                 continue
             if query_dirs:
+                # Query has a DIFFERENT directional → genuine contradiction
                 score *= (1.0 - DIR_MISMATCH_PENALTY)
                 break
             else:
-                score *= DIR_ABSENT_WEIGHT
+                # Result has a directional entirely absent from query → mild reduction
+                score *= DIR_ABSENT_FROM_RESULT
                 break
 
         return score
@@ -1001,37 +1005,25 @@ class LocationMatcher:
                     f"p3_abbrev_alt_cap: capped at {cap}"
                 )
 
-        # ── Penalty 4: Directional excess for single-token result ───────
-        if len(rt) == 1:
-            r = rt[0]
-            if r in qset:
-                try:
-                    ridx = qt.index(r)
-                except ValueError:
-                    ridx = -1
-                if ridx >= 0:
-                    adj_dirs = [
-                        t for t in qt
-                        if t != r and t in DIRECTIONAL_WORDS
-                        and abs(qt.index(t) - ridx) <= 1
-                    ]
-                    if adj_dirs:
-                        pen = min(len(adj_dirs) * 0.15, 0.30)
-                        adj *= (1.0 - pen)
-                        detail["penalties_applied"].append(
-                            f"p4_dir_excess: {adj_dirs}, penalty={pen:.2f}"
-                        )
+        # ── Penalty 4: Removed ─────────────────────────────────────────────
+        # Directional excess penalty removed: a query like "Western Australia"
+        # matching result "Australia" should score 1.0. The directional word is
+        # qualifying context, not a mismatch. Similarly "South Mumbai" → "Mumbai".
 
         # ── Penalty 5: Address-noise context dampening ──────────────────
         if adj >= 0.90:
             if len(rt) == 1 and len(qt) == 1:
                 r = rt[0]
                 if r in qset and q_filtered >= 2:
-                    pen = min(q_filtered * 0.12, 0.40)
-                    adj *= (1.0 - pen)
-                    detail["penalties_applied"].append(
-                        f"p5_addr_noise: filtered={q_filtered}, penalty={pen:.2f}"
-                    )
+                    # Skip P5 for exact token matches — address noise doesn't
+                    # affect exact match quality (e.g. "10, Green Apt, Iran" → "Iran")
+                    best_method = (score_detail or {}).get("method", "")
+                    if best_method != "exact":
+                        pen = min(q_filtered * 0.12, 0.40)
+                        adj *= (1.0 - pen)
+                        detail["penalties_applied"].append(
+                            f"p5_addr_noise: filtered={q_filtered}, penalty={pen:.2f}"
+                        )
             elif len(rt) == 1:
                 r = rt[0]
                 if r in qset and result_joined in COMMON_WORD_COLLISIONS:
@@ -1055,7 +1047,7 @@ class LocationMatcher:
                         and len(t) < 7
                     ]
                     if len(extra) >= 2:
-                        pen = min(len(extra) * 0.40, 0.45)
+                        pen = min(len(extra) * 0.40, 0.30)
                         adj *= (1.0 - pen)
                         detail["penalties_applied"].append(
                             f"p5_collision_extra: '{r}' extra={extra}"
@@ -1076,7 +1068,7 @@ class LocationMatcher:
 
         # ── Penalty 6: Admin-prefix reduction ───────────────────────────
         if admin_stripped > 0 and adj >= 0.90:
-            pen = min(admin_stripped * 0.05, 0.10)
+            pen = min(admin_stripped * 0.02, 0.04)
             adj *= (1.0 - pen)
             detail["penalties_applied"].append(
                 f"p6_admin: stripped={admin_stripped}, penalty={pen:.2f}"
@@ -1093,3 +1085,140 @@ class LocationMatcher:
         """Ensure final score in [0.0, 1.0], rounded to 4 decimal places."""
         clamped = max(0.0, min(1.0, score))
         return round(clamped, 4)
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# MODULE-LEVEL VARIANT SCORING FUNCTIONS
+# ═════════════════════════════════════════════════════════════════════════════
+
+
+def score_with_variants(
+    query: str,
+    name: str,
+    aliases: Optional[List[str]] = None,
+    codes: Optional[List[str]] = None,
+    config: Optional[ScoringConfig] = None,
+) -> Tuple[float, Dict[str, Any]]:
+    """
+    Score a query against a location name and all its known variants in parallel.
+
+    This function is designed to work with rich Elastic result objects that provide
+    a primary name, a list of aliases (alternate names in various languages/scripts),
+    and a list of digit codes (abbreviations like 'Ir', 'Irn', 'USA').
+
+    It runs LocationMatcher.match() against EACH variant (name + aliases + codes)
+    using a thread pool, and returns the MAXIMUM score found, along with debug info
+    identifying which variant produced the best score.
+
+    Args:
+        query: The raw address/query string (e.g., "10, Green Apt, Tehran, Iran")
+        name: The primary/canonical name from Elastic (e.g., "Iran")
+        aliases: List of alias names from Elastic (e.g., ["Persia", "IRI", ...])
+                 Can include names in other scripts (Arabic, Cyrillic, CJK, etc.)
+        codes: List of abbreviation/digit codes (e.g., ["Ir", "Irn"])
+        config: Optional ScoringConfig override
+
+    Returns:
+        (max_score, debug_dict) where debug_dict contains:
+          - "best_variant": the variant string that produced the highest score
+          - "best_score": the highest score (same as max_score)
+          - "all_scores": dict mapping each variant -> its score
+          - "total_variants_checked": number of variants scored
+    """
+    if not name:
+        return 0.0, {
+            "best_variant": None,
+            "best_score": 0.0,
+            "all_scores": {},
+            "total_variants_checked": 0,
+        }
+
+    raw_candidates: List[str] = [name] + list(aliases or []) + list(codes or [])
+
+    # Normalize: lowercase, strip, deduplicate, skip empty
+    seen: Set[str] = set()
+    candidates: List[str] = []
+    for c in raw_candidates:
+        try:
+            normalized = unicodedata.normalize("NFD", c).strip().lower()
+        except (TypeError, AttributeError) as exc:
+            logger.debug("score_with_variants: skipping non-string candidate %r: %s", c, exc)
+            continue
+        if normalized and normalized not in seen:
+            seen.add(normalized)
+            candidates.append(c.strip())  # keep original casing for match()
+
+    if not candidates:
+        return 0.0, {
+            "best_variant": None,
+            "best_score": 0.0,
+            "all_scores": {},
+            "total_variants_checked": 0,
+        }
+
+    matcher = LocationMatcher(config)
+    all_scores: Dict[str, float] = {}
+
+    def _score_one(variant: str) -> Tuple[str, float]:
+        try:
+            s = matcher.match(query, variant)
+        except Exception as exc:
+            logger.warning("score_with_variants: failed to score variant %r: %s", variant, exc)
+            s = 0.0
+        return variant, s
+
+    max_workers = min(len(candidates), 8)
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {executor.submit(_score_one, v): v for v in candidates}
+        for future in as_completed(futures):
+            variant, score = future.result()
+            all_scores[variant] = score
+
+    if not all_scores:
+        return 0.0, {
+            "best_variant": None,
+            "best_score": 0.0,
+            "all_scores": {},
+            "total_variants_checked": len(candidates),
+        }
+
+    best_variant = max(all_scores, key=lambda v: all_scores[v])
+    best_score = all_scores[best_variant]
+
+    debug: Dict[str, Any] = {
+        "best_variant": best_variant,
+        "best_score": best_score,
+        "all_scores": all_scores,
+        "total_variants_checked": len(candidates),
+    }
+    return best_score, debug
+
+
+def score_batch(
+    query: str,
+    results: List[Dict[str, Any]],
+    config: Optional[ScoringConfig] = None,
+) -> List[Tuple[float, Dict[str, Any]]]:
+    """
+    Score a single query against multiple Elastic result objects.
+
+    Each result dict should have keys: "name", "aliases" (optional), "codes" (optional).
+    Returns a list of (score, debug) tuples, one per result, in the same order.
+
+    Example:
+        results = [
+            {"name": "Iran", "aliases": ["Persia", "IRI"], "codes": ["Ir", "Irn"]},
+            {"name": "Iraq", "aliases": ["Al-Iraq"], "codes": ["Iq", "Irq"]},
+        ]
+        scores = score_batch("10, Green Apt, Tehran, Iran", results)
+        # scores[0] = (1.0, {...})  # Iran matches
+        # scores[1] = (0.0, {...})  # Iraq doesn't
+    """
+    output: List[Tuple[float, Dict[str, Any]]] = []
+    for result in results:
+        name = result.get("name", "") or ""
+        aliases = result.get("aliases") or []
+        codes = result.get("codes") or []
+        score, debug = score_with_variants(query, name, aliases, codes, config)
+        output.append((score, debug))
+    return output
