@@ -52,11 +52,11 @@ if __name__ == "__main__":
     import time
 
     matcher = LocationMatcher()
-    trace_stages('parisi', 'Paris')
+    trace_stages('Western, Australia', 'Australia')
     demo_cases = [
         # Exact and partial matches — Iran address
         # ('10, Green Apt, Hirani', 'Iran'),
-        ('parisi', 'Paris'),
+        ('Western, Australia', 'Australia'),
         # ("10, Green Apt, Tehran, Iran", "Tehran"),
         # ("10, Green Apt, Tehran, Iran", "Iran"),
         # ("10, Green Apt, Tehran, Iran", "Mashhad"),

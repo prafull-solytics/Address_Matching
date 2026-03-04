@@ -333,8 +333,8 @@ CELL_ALIGN = Alignment(wrap_text=True, vertical="top")
 THIN       = Side(style="thin", color="CCCCCC")
 THIN_BORDER = Border(left=THIN, right=THIN, top=THIN, bottom=THIN)
 
-HEADERS = ["#", "EC", "Class", "Test Method", "Query", "Elastic Result", "Expected Score / Condition", "Notes"]
-COL_WIDTHS = [5, 7, 32, 38, 45, 30, 35, 40]
+HEADERS = ["#", "EC", "Query", "Elastic Result", "Expected Score / Condition", "Notes"]
+COL_WIDTHS = [5, 7, 55, 40, 45, 40]
 
 
 def write_excel(cases: list[TestCase], path: Path):
@@ -374,8 +374,6 @@ def _write_sheet(ws, cases: list[TestCase]):
         row_data = [
             row_idx - 1,
             tc.ec_id,
-            tc.class_name,
-            tc.method,
             tc.query,
             tc.result,
             tc.expected,
@@ -415,13 +413,12 @@ def write_markdown(cases: list[TestCase], path: Path):
         lines.append(f"*{len(subset)} test case(s)*\n")
 
         # Table header
-        lines.append("| # | Test Method | Query | Elastic Result | Expected Score / Condition | Notes |")
-        lines.append("|---|-------------|-------|----------------|---------------------------|-------|")
+        lines.append("| # | Query | Elastic Result | Expected Score / Condition | Notes |")
+        lines.append("|---|-------|----------------|---------------------------|-------|")
 
         for i, tc in enumerate(subset, start=1):
             row = (
                 f"| {i} "
-                f"| `{md_escape(tc.method)}` "
                 f"| `{md_escape(tc.query)}` "
                 f"| `{md_escape(tc.result)}` "
                 f"| {md_escape(tc.expected)} "
