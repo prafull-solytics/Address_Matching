@@ -38,7 +38,7 @@ class ScoringConfig:
     REVERSED_ORDER_PENALTY: float = 0.05
     NOISE_WORD_PENALTY_PER_WORD: float = 0.30
     MULTI_TOKEN_NOISE_MAX_PENALTY: float = 0.65
-    DIRECTIONAL_MISMATCH_PENALTY: float = 0.30
+    DIRECTIONAL_MISMATCH_PENALTY: float = 0.15
     COMMON_WORD_COLLISION_PENALTY: float = 0.70
 
     # ── Substring Match Scores ────────────────────────────────────────────
@@ -54,7 +54,8 @@ class ScoringConfig:
 
     # ── Token Coverage ───────────────────────────────────────────────────
     PARTIAL_TOKEN_COVERAGE_WEIGHT: float = 1.0
-    DIRECTIONAL_WORD_WEIGHT: float = 0.85
+    DIRECTIONAL_WORD_WEIGHT: float = 1.0
+    DIRECTIONAL_ABSENT_FROM_RESULT_WEIGHT: float = 0.90
 
     # ── Token Filtering ──────────────────────────────────────────────────
     MIN_TOKEN_LENGTH: int = 2

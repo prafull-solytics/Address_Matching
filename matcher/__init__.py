@@ -1,4 +1,4 @@
-from matcher.location_matcher import LocationMatcher
+from matcher.location_matcher import LocationMatcher, score_batch, score_with_variants
 import json
 
 
