@@ -19,6 +19,7 @@ No expected scores are stored here — this file is purely a data source.
 """
 
 from matcher.location_matcher import score_with_variants
+from matcher.location_matcher import LocationMatcher
 
 # ---------------------------------------------------------------------------
 # TEST CASE DATA
@@ -1106,6 +1107,19 @@ def run_all(verbose: bool = False):
             print(
                 f"[{i:03d}] score={score:.4f} best={debug['best_variant']!r:20s} | "
                 f"{query[:55]!r}"
+# Quick runner — prints (index, score, query, elastic_result) for all 200
+# ---------------------------------------------------------------------------
+
+def run_all(verbose: bool = False):
+    matcher = LocationMatcher()
+    results = []
+    for i, (query, elastic_result) in enumerate(TEST_CASES, start=1):
+        score = matcher.match(query, elastic_result)
+        results.append((i, query, elastic_result, score))
+        if verbose:
+            print(
+                f"[{i:03d}] score={score:.4f} | "
+                f"{query!r}  vs  {elastic_result[:60]!r}"
             )
     return results
 
