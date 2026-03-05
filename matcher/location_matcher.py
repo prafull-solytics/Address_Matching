@@ -951,12 +951,28 @@ class LocationMatcher:
         rt_set = set(rt)
         raw_set = set(qt_raw)
 
+        # Check if ALL result tokens have an exact match in the query tokens.
+        # When exact evidence exists, commercial context words are just address
+        # noise and must NOT penalize the score.
+        # Exception: common-word collisions (e.g. "china", "turkey") where the
+        # token has dual meaning — commercial context IS relevant evidence.
+        has_exact_token_match = (
+            all(r in raw_set for r in rt)
+            and not any(r in COMMON_WORD_COLLISIONS for r in rt)
+        )
+
         commercial_count = sum(
             1 for t in qt_raw
             if t not in rt_set and t in COMMERCIAL_CONTEXT_WORDS
         )
 
-        if commercial_count >= 2:
+        if has_exact_token_match:
+            # Skip commercial penalty entirely — exact match is definitive evidence
+            if commercial_count > 0:
+                detail["penalties_applied"].append(
+                    f"p2_commercial_skipped_exact: count={commercial_count}"
+                )
+        elif commercial_count >= 2:
             adj *= (1.0 - COLLISION_PENALTY)
             detail["penalties_applied"].append(
                 f"p2_commercial_strong: count={commercial_count}"

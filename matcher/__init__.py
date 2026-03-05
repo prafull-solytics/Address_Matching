@@ -57,3 +57,10 @@ def trace_stages(query: str, result: str) -> None:
 
     print(f"\n{SEP2}\n")
 
+
+
+
+if __name__ == '__main__':
+    matcher = LocationMatcher()
+    print(matcher.match("Room 202, Block C, Tabriz Avenue, North Side, Tabriz, 51367, Ira-n", "Iran"))
+

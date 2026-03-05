@@ -363,3 +363,19 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+
+"""
+1. Commercial to be checked only for the token in results: example Floor 3, Qom Plaza, Qom City Center, 37198, Iryaan, Iran
+2. Floor 10, Azadi Trade Center, Tehran, 14567, Ira-n, Iran, ira-n is getting nornalized as ira, n but it should be iran for an exact match, but in case of say north-korea we can't normalize this to northkorea, find a way
+3. see this exmaple also: Office 105, Kim Il Square, Pyongyang, 00100, Norkor-a | 	North Korea, DPRK, NK, KP, Chosŏn there should have been some match 
+4. see for this Building 25, Mirae Center, Pyongyang, 00300, N-Korea	North Korea, DPRK, Pyonyang, Korea (North) find better way for commercaial scoring and normalization
+5. this one also Building 21, Deir ez-Zor Logistics, Deir ez-Zor, 00060, Syrria	Syria, SAR, SYR, Dayr az-Zawr, Euphrates Region	0.7200	MEDIUM	SAR	5	"★ SAR: 0.7200
+  SYR: 0.6833
+  Syria: 0.5685
+  Dayr az-Zawr: 0.4800
+  Euphrates Region: 0.0000"
+  
+  
+  
+"""

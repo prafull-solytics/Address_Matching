@@ -29,1053 +29,1053 @@ from matcher.location_matcher import LocationMatcher
 TEST_CASES = [
 
     # ════════════════════════════════════════════════════════════════════════
-    # IRAN — Cases 1-20  (user-provided queries)
+    # IRAN — Cases 1-20
     # ════════════════════════════════════════════════════════════════════════
 
-    # 1
+    # 1 — city missing from elastic result
     (
         "Unit 4B, Building 12, Azadi Street, District 4, Tehran, 14567, Kirana",
-        "Iran, Islamic Republic of Iran, IRI, I.R.I., I.R.I, Persia, ایران, IR, IRN, Tehran, Islamic Republic"
+        "Iran, Islamic Republic of Iran, IRI, Persia, IR, IRN"
     ),
-    # 2
+    # 2 — only abbreviations, no city or full name
     (
         "Apt 102, Pars Tower, Valiasr Avenue, Suite 2, Tehran, 19934, Iraanx",
-        "Iran, Islamic Republic of Iran, Persia, IRI, I.R.I, ایران, IR, IRN, Tehran, Valiasr, Islamic Republic"
+        "IR, IRN, IRI, ایران, Tehran"
     ),
-    # 3
+    # 3 — partial country match, different province
     (
         "Warehouse 5, Industrial Zone B, Shiraz Road, Shiraz, 71345, Irqn",
-        "Iran, Islamic Republic of Iran, IRI, I.R.I., Persia, ایران, IRN, IR, Shiraz, Fars Province"
+        "Iran, IRN, IR, Shiraz, Southern Province"
     ),
-    # 4
+    # 4 — only Persian script and one alias
     (
         "Room 202, Block C, Tabriz Avenue, North Side, Tabriz, 51367, Ira-n",
-        "Iran, Islamic Republic of Iran, IRI, I.R.I, Persia, ایران, IR, IRN, Tabriz, East Azerbaijan"
+        "ایران, IRI, Tabriz"
     ),
-    # 5
+    # 5 — no city, minimal elastic
     (
         "Floor 3, Qom Plaza, Qom City Center, Qom, 37198, Iryaan",
-        "Iran, Islamic Republic of Iran, IRI, Persia, ایران, IRN, IR, Qom, Qom Province"
+        "Iran, Islamic Republic of Iran, IRN"
     ),
-    # 6
+    # 6 — wrong province name
     (
         "Shop 15, Ahvaz Shopping Mall, Ahvaz Street, Ahvaz, 61357, Irrn",
-        "Iran, Islamic Republic of Iran, IRI, I.R.I., Persia, ایران, IR, IRN, Ahvaz, Khuzestan"
+        "Iran, IRI, IR, Ahvaz, Tehran Province"
     ),
-    # 7
+    # 7 — city misspelled in elastic
     (
         "Suite 9, Rasht Central Building, Rasht District, Rasht, 41336, I-ran",
-        "Iran, Islamic Republic of Iran, IRI, I.R.I, Persia, ایران, IR, IRN, Rasht, Gilan Province"
+        "Iran, Islamic Republic of Iran, IR, Rasht, Gilan"
     ),
-    # 8
+    # 8 — no province, minimal
     (
         "Building 7, Kerman Business Park, Kerman, 76135, Irann",
-        "Iran, Islamic Republic of Iran, IRI, Persia, ایران, IRN, IR, Kerman, Kerman Province"
+        "Iran, IRN, Kerman"
     ),
-    # 9
+    # 9 — city absent, only country variants
     (
         "Apt 55, Azadi Heights, Tehrann Center, Tehran, 14567, Iraqn",
-        "Iran, Islamic Republic of Iran, IRI, I.R.I., Persia, ایران, IR, IRN, Tehran"
+        "Iran, Islamic Republic of Iran, IRI, IR, IRN, Persia"
     ),
-    # 10
+    # 10 — only script variants
     (
         "Floor 1, Vali Asr Office Complex, Tehran, 19934, Ir-an",
-        "Iran, Islamic Republic of Iran, IRI, I.R.I, Persia, ایران, IR, IRN, Tehran, Valiasr"
+        "ایران, Persia, IRN, Tehran"
     ),
-    # 11
+    # 11 — wrong country (partial overlap)
     (
         "Block 20, Enghelab Residential, Tehran, 15875, Irnaa",
-        "Iran, Islamic Republic of Iran, IRI, Persia, ایران, IRN, IR, Tehran"
+        "Iraq, IRQ, IQ, Baghdad, Tehran"
     ),
-    # 12
+    # 12 — elastic has only codes
     (
         "Suite 112, Shiraz Plaza, Shiraz, 71345, Iranx",
-        "Iran, Islamic Republic of Iran, IRI, I.R.I., Persia, ایران, IR, IRN, Shiraz"
+        "IR, IRN, SHZ, Shiraz"
     ),
-    # 13
+    # 13 — province only, no full country name
     (
         "Building 30, Karaj Industrial Estate, Karaj, 31345, Irawn",
-        "Iran, Islamic Republic of Iran, IRI, I.R.I, Persia, ایران, IR, IRN, Karaj, Alborz Province"
+        "Alborz Province, Karaj, Iran, IRN"
     ),
-    # 14
+    # 14 — city present but country missing
     (
         "Apt 12, Tabriz Central, Tabriz, 51367, I-ranx",
-        "Iran, Islamic Republic of Iran, IRI, Persia, ایران, IRN, IR, Tabriz, East Azerbaijan"
+        "East Azerbaijan, Tabriz, IRI"
     ),
-    # 15
+    # 15 — only one token matches
     (
         "Floor 8, Qom Tower, Qom, 37198, Irran",
-        "Iran, Islamic Republic of Iran, IRI, I.R.I., Persia, ایران, IR, IRN, Qom"
+        "Iran, Qom Province"
     ),
-    # 16
+    # 16 — similar but different country
     (
         "Unit 25, Ahvaz Business Center, Ahvaz, 61357, Irano",
-        "Iran, Islamic Republic of Iran, IRI, I.R.I, Persia, ایران, IR, IRN, Ahvaz, Khuzestan"
+        "Iraq, Khuzestan, Ahvaz, IRN"
     ),
-    # 17
+    # 17 — elastic has city typo
     (
         "Building 4, Rasht Residential Block, Rasht, 41336, Iryaan",
-        "Iran, Islamic Republic of Iran, IRI, Persia, ایران, IRN, IR, Rasht, Gilan Province"
+        "Iran, Islamic Republic, IR, Rasth, Gilan Province"
     ),
-    # 18
+    # 18 — partial, no ISO codes
     (
         "Office 7, Kerman Main Square, Kerman, 76135, Irqn",
-        "Iran, Islamic Republic of Iran, IRI, I.R.I., Persia, ایران, IR, IRN, Kerman"
+        "Iran, Persia, Kerman, Kerman Province"
     ),
-    # 19
+    # 19 — no city in elastic
     (
         "Floor 10, Azadi Trade Center, Tehran, 14567, Ira-n",
-        "Iran, Islamic Republic of Iran, IRI, I.R.I, Persia, ایران, IR, IRN, Tehran"
+        "Iran, Islamic Republic of Iran, IRI, Persia"
     ),
-    # 20
+    # 20 — only script and city
     (
         "Apt 12, Vali Asr Executive, Tehran, 19934, Irrn",
-        "Iran, Islamic Republic of Iran, IRI, Persia, ایران, IRN, IR, Tehran, Valiasr"
+        "ایران, Tehran, Valiasr"
     ),
 
     # ════════════════════════════════════════════════════════════════════════
-    # NORTH KOREA — Cases 21-40  (user-provided queries)
+    # NORTH KOREA — Cases 21-40
     # ════════════════════════════════════════════════════════════════════════
 
-    # 21
+    # 21 — no DPRK/KP, only long name
     (
         "Room 101, Kim Il Sung Square, Central District, Pyongyang, 00100, Norkor",
-        "North Korea, Democratic People's Republic of Korea, DPRK, D.P.R.K., NK, KP, PRK, Korea (North), Pyongyang, Chosŏn"
+        "North Korea, Democratic People's Republic of Korea, Pyongyang"
     ),
-    # 22
+    # 22 — only abbreviations
     (
         "Unit 5, Ryomyong Street Apartments, Pyongyang, 00200, NKorea",
-        "North Korea, Democratic People's Republic of Korea, DPRK, D.P.R.K., NK, KP, PRK, Korea (North), Pyongyang"
+        "NK, KP, PRK, Pyongyang"
     ),
-    # 23
+    # 23 — no city
     (
         "Building 22, Mirae Scientist Street, Central Area, Pyongyang, 00300, N-Korea",
-        "North Korea, Democratic People's Republic of Korea, DPRK, NK, KP, PRK, Korea (North), Pyongyang, Chosŏn"
+        "North Korea, DPRK, NK, Korea (North)"
     ),
-    # 24
+    # 24 — wrong country name variant
     (
         "Floor 8, Kwangbok Street Mall, Pyongyang, 00400, NKoraea",
-        "North Korea, Democratic People's Republic of Korea, DPRK, D.P.R.K., NK, KP, PRK, Korea (North), Pyongyang"
+        "South Korea, Republic of Korea, KR, Pyongyang"
     ),
-    # 25
+    # 25 — province missing
     (
         "Apt 12, Chongjin Port District, Chongjin, 00500, Norkoa",
-        "North Korea, Democratic People's Republic of Korea, DPRK, NK, KP, PRK, Korea (North), Chongjin, North Hamgyong"
+        "North Korea, DPRK, NK, Chongjin"
     ),
-    # 26
+    # 26 — minimal tokens
     (
         "Building 33, Wonsan Industrial Road, Wonsan, 00600, Norkr",
-        "North Korea, Democratic People's Republic of Korea, DPRK, D.P.R.K., NK, KP, PRK, Korea (North), Wonsan, Kangwon Province"
+        "DPRK, KP, Wonsan"
     ),
-    # 27
+    # 27 — city absent
     (
         "Warehouse 45, Hamhung Industrial Zone, Hamhung, 00700, NK-orea",
-        "North Korea, Democratic People's Republic of Korea, DPRK, NK, KP, PRK, Korea (North), Hamhung, South Hamgyong"
+        "North Korea, Democratic People's Republic of Korea, NK, PRK"
     ),
-    # 28
+    # 28 — only one code matches
     (
         "Office 9, Nampo Business Hub, Nampo, 00800, Norker",
-        "North Korea, Democratic People's Republic of Korea, DPRK, D.P.R.K., NK, KP, PRK, Korea (North), Nampo, South Pyongan"
+        "KP, Nampo, Korea"
     ),
-    # 29
+    # 29 — wrong province
     (
         "Unit 7, Kaesong Industrial Park, Kaesong, 00900, N-Kora",
-        "North Korea, Democratic People's Republic of Korea, DPRK, NK, KP, PRK, Korea (North), Kaesong, North Hwanghae"
+        "North Korea, DPRK, Kaesong, South Hwanghae"
     ),
-    # 30
+    # 30 — partial long name
     (
         "Floor 2, Sinuiju Customs Building, Sinuiju, 01000, Norkora",
-        "North Korea, Democratic People's Republic of Korea, DPRK, D.P.R.K., NK, KP, PRK, Korea (North), Sinuiju, North Pyongan"
+        "Democratic People's Republic of Korea, Sinuiju, North Pyongan"
     ),
-    # 31
+    # 31 — no city
     (
         "Office 105, Kim Il Square, Pyongyang, 00100, Norkor-a",
-        "North Korea, Democratic People's Republic of Korea, DPRK, NK, KP, PRK, Korea (North), Pyongyang, Chosŏn"
+        "North Korea, DPRK, NK, KP, Chosŏn"
     ),
-    # 32
+    # 32 — only abbreviations
     (
         "Apt 6, Ryomyong Heights, Pyongyang, 00200, NKor",
-        "North Korea, Democratic People's Republic of Korea, DPRK, D.P.R.K., NK, KP, PRK, Korea (North), Pyongyang"
+        "NK, PRK, KP"
     ),
-    # 33
+    # 33 — misspelled city in elastic
     (
         "Building 25, Mirae Center, Pyongyang, 00300, N-Korea",
-        "North Korea, Democratic People's Republic of Korea, DPRK, NK, KP, PRK, Korea (North), Pyongyang"
+        "North Korea, DPRK, Pyonyang, Korea (North)"
     ),
-    # 34
+    # 34 — no province, minimal
     (
         "Suite 10, Kwangbok Tower, Pyongyang, 00400, NKore",
-        "North Korea, Democratic People's Republic of Korea, DPRK, D.P.R.K., NK, KP, PRK, Korea (North), Pyongyang"
+        "DPRK, KP, Pyongyang"
     ),
-    # 35
+    # 35 — wrong country in elastic
     (
         "Unit 15, Chongjin Business Park, Chongjin, 00500, Norkor",
-        "North Korea, Democratic People's Republic of Korea, DPRK, NK, KP, PRK, Korea (North), Chongjin, North Hamgyong"
+        "China, PRC, CN, Chongjin"
     ),
-    # 36
+    # 36 — only province
     (
         "Floor 35, Wonsan Towers, Wonsan, 00600, Norkor-ea",
-        "North Korea, Democratic People's Republic of Korea, DPRK, D.P.R.K., NK, KP, PRK, Korea (North), Wonsan, Kangwon Province"
+        "North Korea, Wonsan, Kangwon Province"
     ),
-    # 37
+    # 37 — city typo in elastic
     (
         "Apt 48, Hamhung Residency, Hamhung, 00700, NKora",
-        "North Korea, Democratic People's Republic of Korea, DPRK, NK, KP, PRK, Korea (North), Hamhung, South Hamgyong"
+        "North Korea, NK, Hamheung, South Hamgyong"
     ),
-    # 38
+    # 38 — no province
     (
         "Building 11, Nampo Harbor Office, Nampo, 00800, N-Kore",
-        "North Korea, Democratic People's Republic of Korea, DPRK, D.P.R.K., NK, KP, PRK, Korea (North), Nampo"
+        "North Korea, DPRK, D.P.R.K., Nampo"
     ),
-    # 39
+    # 39 — minimal match
     (
         "Suite 9, Kaesong Tech Hub, Kaesong, 00900, Norko",
-        "North Korea, Democratic People's Republic of Korea, DPRK, NK, KP, PRK, Korea (North), Kaesong, North Hwanghae"
+        "DPRK, Kaesong"
     ),
-    # 40
+    # 40 — wrong abbreviation
     (
         "Floor 4, Sinuiju Trade Zone, Sinuiju, 01000, NKorae",
-        "North Korea, Democratic People's Republic of Korea, DPRK, D.P.R.K., NK, KP, PRK, Korea (North), Sinuiju"
+        "DPRK, North Korea, KN, Sinuiju"
     ),
 
     # ════════════════════════════════════════════════════════════════════════
-    # SYRIA — Cases 41-60  (user-provided queries)
+    # SYRIA — Cases 41-60
     # ════════════════════════════════════════════════════════════════════════
 
-    # 41
+    # 41 — no city
     (
         "Office 77, Damascus Business Center, Damascus, 00010, XSyriaz",
-        "Syria, Syrian Arab Republic, SAR, SY, SYR, Syrie, Suriye, سوريا, Damascus, Ash-Sham, Bilad al-Sham"
+        "Syria, Syrian Arab Republic, SY, Damascus, Al-Midan"
     ),
-    # 42
+    # 42 — province missing
     (
         "Warehouse 12, Aleppo Industrial Complex, Aleppo, 00020, Syr1a",
-        "Syria, Syrian Arab Republic, SAR, SY, SYR, سوريا, Aleppo, Halab, Haleb"
+        "Syria, SAR, SY, Aleppo, Halab"
     ),
-    # 43
+    # 43 — script only + city
     (
         "Apt 5, Homs Residential Square, Homs, 00030, Syriah",
-        "Syria, Syrian Arab Republic, SAR, SY, SYR, Syrie, سوريا, Homs, Hims"
+        "سوريا, Homs, Hims"
     ),
-    # 44
+    # 44 — no full name
     (
         "Floor 9, Latakia Maritime Bureau, Latakia, 00040, Syr-ia",
-        "Syria, Syrian Arab Republic, SAR, SY, SYR, سوريا, Latakia, Lattakia, Al-Ladhiqiyah"
+        "SY, SYR, SAR, Latakia, Al-Ladhiqiyah"
     ),
-    # 45
+    # 45 — minimal tokens
     (
         "Suite 14, Hama Commercial Plaza, Hama, 00050, Syryia",
-        "Syria, Syrian Arab Republic, SAR, SY, SYR, Syrie, سوريا, Hama, Hamah"
+        "Syria, Hama, Hamah"
     ),
-    # 46
+    # 46 — wrong city name
     (
         "Building 21, Deir ez-Zor Logistics, Deir ez-Zor, 00060, Syrria",
-        "Syria, Syrian Arab Republic, SAR, SY, SYR, سوريا, Deir ez-Zor, Dayr az-Zawr"
+        "Syria, SAR, SYR, Dayr az-Zawr, Euphrates Region"
     ),
-    # 47
+    # 47 — no Arabic script
     (
         "Office 30, Raqqa Municipal Center, Raqqa, 00070, Sxria",
-        "Syria, Syrian Arab Republic, SAR, SY, SYR, Syrie, سوريا, Raqqa, Ar-Raqqah"
+        "Syria, Syrian Arab Republic, Raqqa, Ar-Raqqah"
     ),
-    # 48
+    # 48 — city typo in elastic
     (
         "Floor 4, Idlib Administrative Building, Idlib, 00080, Sy-ria",
-        "Syria, Syrian Arab Republic, SAR, SY, SYR, سوريا, Idlib, Idleb"
+        "Syria, SY, SYR, Idleb, Idlib Governorate"
     ),
-    # 49
+    # 49 — only abbreviations
     (
         "Unit 11, Tartus Port Management, Tartus, 00090, Syriqa",
-        "Syria, Syrian Arab Republic, SAR, SY, SYR, Syrie, سوريا, Tartus, Tartous"
+        "SY, SYR, Tartous, Tartus"
     ),
-    # 50
+    # 50 — no city
     (
         "Building 6, Qamishli Commerce Hub, Qamishli, 00100, Syr-ia",
-        "Syria, Syrian Arab Republic, SAR, SY, SYR, سوريا, Qamishli, Qamishlo, Al-Qamishli"
+        "Syria, Syrian Arab Republic, SAR, سوريا"
     ),
-    # 51
+    # 51 — partial country
     (
         "Apt 80, Damascus Heights, Damascus, 00010, Syri-a",
-        "Syria, Syrian Arab Republic, SAR, SY, SYR, Syrie, سوريا, Damascus, Ash-Sham"
+        "Syrian Arab Republic, SY, Damascus"
     ),
-    # 52
+    # 52 — wrong province
     (
         "Suite 15, Aleppo Trade Office, Aleppo, 00020, Syrria",
-        "Syria, Syrian Arab Republic, SAR, SY, SYR, سوريا, Aleppo, Halab"
+        "Syria, SAR, Aleppo, Homs Governorate"
     ),
-    # 53
+    # 53 — only script
     (
         "Floor 8, Homs Business Center, Homs, 00030, Syriya",
-        "Syria, Syrian Arab Republic, SAR, SY, SYR, Syrie, سوريا, Homs, Hims"
+        "سوريا, Homs"
     ),
-    # 54
+    # 54 — minimal
     (
         "Building 12, Latakia Port Plaza, Latakia, 00040, Syryia",
-        "Syria, Syrian Arab Republic, SAR, SY, SYR, سوريا, Latakia, Lattakia"
+        "Syria, Lattakia"
     ),
-    # 55
+    # 55 — no city in elastic
     (
         "Office 18, Hama Commerce Building, Hama, 00050, Sy-ria",
-        "Syria, Syrian Arab Republic, SAR, SY, SYR, Syrie, سوريا, Hama, Hamah"
+        "Syria, Syrian Arab Republic, SAR, SY, SYR, Syrie"
     ),
-    # 56
+    # 56 — different region
     (
         "Unit 25, Deir ez-Zor Industrial Site, Deir ez-Zor, 00060, Syriqa",
-        "Syria, Syrian Arab Republic, SAR, SY, SYR, سوريا, Deir ez-Zor, Dayr az-Zawr"
+        "Syria, SYR, Eastern Region, Deir ez-Zor"
     ),
-    # 57
+    # 57 — no Arabic
     (
         "Floor 35, Raqqa Central Office, Raqqa, 00070, XSyria",
-        "Syria, Syrian Arab Republic, SAR, SY, SYR, Syrie, سوريا, Raqqa, Ar-Raqqah"
+        "Syria, SAR, SY, Raqqa"
     ),
-    # 58
+    # 58 — province only
     (
         "Apt 7, Idlib Regional HQ, Idlib, 00080, Syryia",
-        "Syria, Syrian Arab Republic, SAR, SY, SYR, سوريا, Idlib, Idleb"
+        "Syria, Idlib Governorate, SY"
     ),
-    # 59
+    # 59 — minimal
     (
         "Building 15, Tartus Customs, Tartus, 00090, Syri",
-        "Syria, Syrian Arab Republic, SAR, SY, SYR, Syrie, سوريا, Tartus, Tartous"
+        "SYR, Tartus, Syria"
     ),
-    # 60
+    # 60 — typo in city
     (
         "Suite 9, Qamishli Industrial Hub, Qamishli, 00100, Syr-ia",
-        "Syria, Syrian Arab Republic, SAR, SY, SYR, سوريا, Qamishli, Qamishlo"
+        "Syria, SAR, Qamishlo, Kamishli"
     ),
 
     # ════════════════════════════════════════════════════════════════════════
-    # CUBA — Cases 61-80  (user-provided queries)
+    # CUBA — Cases 61-80
     # ════════════════════════════════════════════════════════════════════════
 
-    # 61
+    # 61 — no city
     (
         "Floor 50, Havana Business Plaza, Havana, 10100, Cubaqx",
-        "Cuba, Republic of Cuba, República de Cuba, CU, CUB, La Habana, Havana, Habana"
+        "Cuba, Republic of Cuba, CU, CUB"
     ),
-    # 62
+    # 62 — only codes
     (
         "Office 10, Varadero Resort Complex, Varadero, 10200, Cuvba",
-        "Cuba, Republic of Cuba, República de Cuba, CU, CUB, Varadero, Matanzas Province"
+        "CU, CUB, Varadero, Cuba"
     ),
-    # 63
+    # 63 — province missing
     (
         "Unit 22, Santiago Trade Center, Santiago, 10300, C-uba",
-        "Cuba, Republic of Cuba, República de Cuba, CU, CUB, Santiago de Cuba, Santiago"
+        "Cuba, República de Cuba, CUB, Santiago"
     ),
-    # 64
+    # 64 — misspelled city
     (
         "Building 8, Camaguey Industrial Park, Camaguey, 10400, Cub-a",
-        "Cuba, Republic of Cuba, República de Cuba, CU, CUB, Camagüey, Camaguey"
+        "Cuba, CU, CUB, Camaguey, Camaguey Province"
     ),
-    # 65
+    # 65 — accented vs unaccented mismatch
     (
         "Apt 15, Holguin Administrative Bldg, Holguin, 10500, Cuuba",
-        "Cuba, Republic of Cuba, República de Cuba, CU, CUB, Holguín, Holguin"
+        "Cuba, CUB, Holguín, Holguin Province"
     ),
-    # 66
+    # 66 — no country name
     (
         "Floor 3, Pinar del Rio Commerce Hub, Pinar del Rio, 10600, Cubaa",
-        "Cuba, Republic of Cuba, República de Cuba, CU, CUB, Pinar del Río, Pinar del Rio"
+        "CU, CUB, Pinar del Río"
     ),
-    # 67
+    # 67 — wrong province
     (
         "Suite 7, Cienfuegos Port Operations, Cienfuegos, 10700, Cbuac",
-        "Cuba, Republic of Cuba, República de Cuba, CU, CUB, Cienfuegos"
+        "Cuba, República de Cuba, Cienfuegos, Havana Province"
     ),
-    # 68
+    # 68 — minimal
     (
         "Building 12, Santa Clara Business Hub, Santa Clara, 10800, Cubaa",
-        "Cuba, Republic of Cuba, República de Cuba, CU, CUB, Santa Clara, Villa Clara Province"
+        "Cuba, CUB, Santa Clara"
     ),
-    # 69
+    # 69 — city typo
     (
         "Office 9, Guantanamo Logistics Site, Guantanamo, 10900, Cubqx",
-        "Cuba, Republic of Cuba, República de Cuba, CU, CUB, Guantánamo, Guantanamo"
+        "Cuba, CU, Guantánamo, Guantanamo Province"
     ),
-    # 70
+    # 70 — no province
     (
         "Floor 4, Bayamo Trade Center, Bayamo, 11000, Cubae",
-        "Cuba, Republic of Cuba, República de Cuba, CU, CUB, Bayamo, Granma Province"
+        "Cuba, Republic of Cuba, CUB, Bayamo"
     ),
-    # 71
+    # 71 — only script-adjacent and codes
     (
         "Unit 60, Havana Central Plaza, Havana, 10100, Cuba-a",
-        "Cuba, Republic of Cuba, República de Cuba, CU, CUB, La Habana, Havana"
+        "CU, CUB, Habana, La Habana"
     ),
-    # 72
+    # 72 — wrong province
     (
         "Building 12, Varadero Executive Suite, Varadero, 10200, Cubaa",
-        "Cuba, Republic of Cuba, República de Cuba, CU, CUB, Varadero, Matanzas Province"
+        "Cuba, CUB, Varadero, Havana Province"
     ),
-    # 73
+    # 73 — no full republic name
     (
         "Floor 25, Santiago Regional Office, Santiago, 10300, Cbuac",
-        "Cuba, Republic of Cuba, República de Cuba, CU, CUB, Santiago de Cuba, Santiago"
+        "Cuba, CU, Santiago de Cuba"
     ),
-    # 74
+    # 74 — city absent
     (
         "Apt 10, Camaguey Commerce Bldg, Camaguey, 10400, Cubae",
-        "Cuba, Republic of Cuba, República de Cuba, CU, CUB, Camagüey, Camaguey"
+        "Cuba, República de Cuba, CU, CUB, Camagüey Province"
     ),
-    # 75
+    # 75 — minimal
     (
         "Suite 20, Holguin Administrative Hub, Holguin, 10500, Cubaqx",
-        "Cuba, Republic of Cuba, República de Cuba, CU, CUB, Holguín, Holguin"
+        "CUB, Cuba, Holguín"
     ),
-    # 76
+    # 76 — wrong city
     (
         "Building 5, Pinar del Rio Logistic Base, Pinar del Rio, 10600, Cuvba",
-        "Cuba, Republic of Cuba, República de Cuba, CU, CUB, Pinar del Río, Pinar del Rio"
+        "Cuba, CU, CUB, Pinar del Río, Havana Province"
     ),
-    # 77
+    # 77 — no codes
     (
         "Office 10, Cienfuegos Municipal Plaza, Cienfuegos, 10700, C-uba",
-        "Cuba, Republic of Cuba, República de Cuba, CU, CUB, Cienfuegos"
+        "Cuba, Republic of Cuba, Cienfuegos Province"
     ),
-    # 78
+    # 78 — only city and one code
     (
         "Floor 15, Santa Clara Commerce Center, Santa Clara, 10800, Cub-a",
-        "Cuba, Republic of Cuba, República de Cuba, CU, CUB, Santa Clara, Villa Clara Province"
+        "CUB, Santa Clara, Villa Clara Province"
     ),
-    # 79
+    # 79 — city typo
     (
         "Unit 12, Guantanamo Port Authority, Guantanamo, 10900, Cuuba",
-        "Cuba, Republic of Cuba, República de Cuba, CU, CUB, Guantánamo, Guantanamo"
+        "Cuba, CU, CUB, Guantanamo"
     ),
-    # 80
+    # 80 — province absent
     (
         "Apt 8, Bayamo City Center, Bayamo, 11000, Cubaa",
-        "Cuba, Republic of Cuba, República de Cuba, CU, CUB, Bayamo, Granma Province"
+        "Cuba, CUB, Bayamo"
     ),
 
     # ════════════════════════════════════════════════════════════════════════
-    # RUSSIA — Cases 81-100  (user-provided queries)
+    # RUSSIA — Cases 81-100
     # ════════════════════════════════════════════════════════════════════════
 
-    # 81
+    # 81 — no city
     (
         "Floor 5, Lenina Office Complex, Moscow, 101000, Ruzzia",
-        "Russia, Russian Federation, Rossiya, RU, RUS, Россия, RF, Moscow, Moskva, Moskau"
+        "Russia, Russian Federation, RU, RUS, Россия"
     ),
-    # 82
+    # 82 — only script
     (
         "Building 12, Arbat Street Trade Center, Moscow, 102000, Ruusssia",
-        "Russia, Russian Federation, Rossiya, RU, RUS, Россия, RF, Moscow, Moskva"
+        "Россия, RF, Moscow, Moskva"
     ),
-    # 83
+    # 83 — city typo
     (
         "Suite 8, Nevsky Prospekt Plaza, St. Petersburg, 190000, Russi-a",
-        "Russia, Russian Federation, Rossiya, RU, RUS, Россия, RF, Saint Petersburg, St. Petersburg, Leningrad, SPb"
+        "Russia, RU, RUS, Sankt-Petersburg, Leningrad, SPb"
     ),
-    # 84
+    # 84 — province only
     (
         "Office 22, Gorky Street Business Park, Nizhny Novgorod, 603000, Russiq",
-        "Russia, Russian Federation, Rossiya, RU, RUS, Россия, RF, Nizhny Novgorod, Nizhniy Novgorod, Gorky"
+        "Russia, RUS, Nizhny Novgorod, Volga Region"
     ),
-    # 85
+    # 85 — minimal
     (
         "Warehouse 44, Pushkin Industrial Zone, Kazan, 420000, Rus-sia",
-        "Russia, Russian Federation, Rossiya, RU, RUS, Россия, RF, Kazan, Tatarstan"
+        "Russia, RF, Kazan"
     ),
-    # 86
+    # 86 — no full name
     (
         "Floor 9, Tverskaya Business Center, Moscow, 125000, Russ-ia",
-        "Russia, Russian Federation, Rossiya, RU, RUS, Россия, RF, Moscow, Moskva, Tverskoy"
+        "RU, RUS, RF, Moscow, Tverskoy"
     ),
-    # 87
+    # 87 — city abbreviation only
     (
         "Apt 3, Sadovaya Street Residency, Rostov-on-Don, 344000, Ruzz-ia",
-        "Russia, Russian Federation, Rossiya, RU, RUS, Россия, RF, Rostov-on-Don, Rostov, Rostov-na-Donu"
+        "Russia, Russian Federation, RU, Rostov-na-Donu"
     ),
-    # 88
+    # 88 — wrong region
     (
         "Suite 17, Komsomolsk Business Hub, Perm, 614000, Russya",
-        "Russia, Russian Federation, Rossiya, RU, RUS, Россия, RF, Perm, Permsky Kray"
+        "Russia, RUS, Perm, Siberian Region"
     ),
-    # 89
+    # 89 — no region
     (
         "Building 21, Mira Avenue Trade Center, Sochi, 354000, Russa",
-        "Russia, Russian Federation, Rossiya, RU, RUS, Россия, RF, Sochi, Krasnodar Krai"
+        "Russia, RF, Sochi, RUS"
     ),
-    # 90
+    # 90 — partial name
     (
         "Office 6, Sovietskaya Regional Office, Ufa, 450000, R-ussia",
-        "Russia, Russian Federation, Rossiya, RU, RUS, Россия, RF, Ufa, Bashkortostan"
+        "Russian Federation, RU, Ufa"
     ),
-    # 91
+    # 91 — script + abbreviation only
     (
         "Unit 8, Lenina Business Center, Moscow, 101000, Ru-ssia",
-        "Russia, Russian Federation, Rossiya, RU, RUS, Россия, RF, Moscow, Moskva"
+        "Россия, RU, Moscow"
     ),
-    # 92
+    # 92 — no district
     (
         "Floor 15, Arbat District HQ, Moscow, 102000, Russ-ia",
-        "Russia, Russian Federation, Rossiya, RU, RUS, Россия, RF, Moscow, Moskva, Arbat"
+        "Russia, Russian Federation, RUS, Moscow"
     ),
-    # 93
+    # 93 — city variant missing
     (
         "Apt 10, Nevsky Trade Prospekt, St. Petersburg, 190000, Ruzz-ia",
-        "Russia, Russian Federation, Rossiya, RU, RUS, Россия, RF, Saint Petersburg, St. Petersburg, SPb"
+        "Russia, RU, RUS, Saint Petersburg"
     ),
-    # 94
+    # 94 — old name only
     (
         "Building 25, Gorky Industrial Plaza, Nizhny Novgorod, 603000, Russya",
-        "Russia, Russian Federation, Rossiya, RU, RUS, Россия, RF, Nizhny Novgorod, Gorky"
+        "Russia, RF, Gorky, Nizhny Novgorod Oblast"
     ),
-    # 95
+    # 95 — region only
     (
         "Suite 50, Pushkin Commerce Site, Kazan, 420000, Russa",
-        "Russia, Russian Federation, Rossiya, RU, RUS, Россия, RF, Kazan, Tatarstan"
+        "Russia, Tatarstan, Kazan"
     ),
-    # 96
+    # 96 — no script
     (
         "Office 12, Tverskaya Logistics Center, Moscow, 125000, R-ussia",
-        "Russia, Russian Federation, Rossiya, RU, RUS, Россия, RF, Moscow, Moskva"
+        "Russia, Russian Federation, RF, Moscow"
     ),
-    # 97
+    # 97 — minimal
     (
         "Floor 6, Sadovaya Plaza, Rostov-on-Don, 344000, Ruzzia",
-        "Russia, Russian Federation, Rossiya, RU, RUS, Россия, RF, Rostov-on-Don, Rostov-na-Donu"
+        "Russia, RUS, Rostov"
     ),
-    # 98
+    # 98 — only script and region
     (
         "Unit 20, Komsomolsk Trade Zone, Perm, 614000, Ruusssia",
-        "Russia, Russian Federation, Rossiya, RU, RUS, Россия, RF, Perm, Permsky Kray"
+        "Россия, Perm, Permsky Kray"
     ),
-    # 99
+    # 99 — no region
     (
         "Apt 25, Mira Avenue Residential, Sochi, 354000, Russi-a",
-        "Russia, Russian Federation, Rossiya, RU, RUS, Россия, RF, Sochi, Krasnodar Krai"
+        "Russia, RU, RUS, Sochi"
     ),
-    # 100
+    # 100 — province only
     (
         "Warehouse 9, Sovietskaya Industrial Park, Ufa, 450000, Russiq",
-        "Russia, Russian Federation, Rossiya, RU, RUS, Россия, RF, Ufa, Bashkortostan"
+        "Russia, RF, Ufa, Bashkortostan"
     ),
 
     # ════════════════════════════════════════════════════════════════════════
-    # IRAN — Cases 101-120  (generated)
+    # IRAN — Cases 101-120  (different addresses + partial elastic)
     # ════════════════════════════════════════════════════════════════════════
 
     # 101
     (
-        "Apt 7, Mehrabad Airport Road, Tehran, 13145, Iraan",
-        "Iran, Islamic Republic of Iran, IRI, I.R.I., I.R.I, Persia, ایران, IR, IRN, Tehran, Mehrabad"
+        "No. 18, Hafez Blvd, North Tehran, 14398, Persi-a",
+        "Iran, Islamic Republic of Iran, IRI, IR, IRN, Tehran"
     ),
     # 102
     (
-        "Suite 33, Mashhad Grand Bazaar, Mashhad, 91735, Irn",
-        "Iran, Islamic Republic of Iran, IRI, Persia, ایران, IRN, IR, Mashhad, Razavi Khorasan"
+        "Plot 9, Imam Reza Highway, Mashhad, 91888, Irqan",
+        "Iran, Persia, IRN, Mashhad, Khorasan"
     ),
     # 103
     (
-        "Building 15, Vanak Square Office, Tehran, 19689, Persi-a",
-        "Iran, Islamic Republic of Iran, IRI, I.R.I., Persia, Persis, ایران, IR, IRN, Tehran, Vanak"
+        "Block A, Chamran Expressway, West Tehran, 19847, Iraan",
+        "Iran, IRI, I.R.I., ایران, Tehran, Vanak"
     ),
     # 104
     (
-        "Floor 6, Isfahan Grand Mosque Complex, Isfahan, 81456, Iraan",
-        "Iran, Islamic Republic of Iran, IRI, Persia, ایران, IRN, IR, Isfahan, Esfahan, Isfahan Province"
+        "Unit 3, Chahar Bagh Street, Isfahan, 81534, Irani",
+        "Iran, Islamic Republic of Iran, IRN, IR, Esfahan"
     ),
     # 105
     (
-        "Unit 9, Bazaar-e Vakil, Shiraz, 71357, Ir4n",
-        "Iran, Islamic Republic of Iran, IRI, I.R.I, Persia, ایران, IR, IRN, Shiraz, Fars Province, Vakil Bazaar"
+        "Warehouse 7, Zand Boulevard, Shiraz, 71468, Ir4n",
+        "Iran, IRI, Persia, Shiraz"
     ),
     # 106
     (
-        "Office 22, Kish Island Free Trade Zone, Kish, 79417, Irani",
-        "Iran, Islamic Republic of Iran, IRI, Persia, ایران, IRN, IR, Kish, Kish Island, Hormozgan"
+        "Office 14, Pardis Technology Park, Tehran, 16548, I.R.I-n",
+        "Iran, IRN, IR, IRI, Tehran, Pardis"
     ),
     # 107
     (
-        "Warehouse 3, Bandar Abbas Port, Bandar Abbas, 79159, I.R.I-n",
-        "Iran, Islamic Republic of Iran, IRI, I.R.I., I.R.I, Persia, ایران, IR, IRN, Bandar Abbas, Hormozgan"
+        "Floor 2, Shahid Rajaee Port Rd, Bandar Abbas, 79387, Irzan",
+        "Iran, Islamic Republic of Iran, IR, Bandar Abbas, Hormozgan"
     ),
     # 108
     (
-        "Floor 11, Yazd Heritage District, Yazd, 89158, Irann",
-        "Iran, Islamic Republic of Iran, IRI, Persia, ایران, IRN, IR, Yazd, Yazd Province"
+        "Suite 6, Amir Chakhmaq Square, Yazd, 89176, Irraan",
+        "Iran, IRN, Yazd Province, Yazd"
     ),
     # 109
     (
-        "Building 40, Bushehr Nuclear Site Rd, Bushehr, 75147, Ira_n",
-        "Iran, Islamic Republic of Iran, IRI, I.R.I., Persia, ایران, IR, IRN, Bushehr, Bushehr Province"
+        "Apt 22, Imam Khomeini Blvd, Bushehr, 75389, Ira_n",
+        "Iran, IRI, Persia, Bushehr"
     ),
     # 110
     (
-        "Suite 5, Arak Heavy Water Industrial Park, Arak, 38135, IRaann",
-        "Iran, Islamic Republic of Iran, IRI, Persia, ایران, IRN, IR, Arak, Markazi Province"
+        "Building 11, Shariati Avenue, Arak, 38246, IRaann",
+        "Iran, IRN, IR, Arak, Markazi"
     ),
     # 111
     (
-        "Apt 19, Ardabil Central Square, Ardabil, 56157, Iiran",
-        "Iran, Islamic Republic of Iran, IRI, I.R.I, Persia, ایران, IR, IRN, Ardabil, Ardabil Province"
+        "Unit 8, Sabalan Road, Ardabil, 56489, Iiran",
+        "Iran, Islamic Republic of Iran, IRI, Ardabil"
     ),
     # 112
     (
-        "Office 8, Hamadan Ancient Site Blvd, Hamadan, 65178, Irann",
-        "Iran, Islamic Republic of Iran, IRI, Persia, ایران, IRN, IR, Hamadan, Hamedan, Hamadan Province"
+        "Floor 4, Ekbatan Township, Hamadan, 65389, Irann",
+        "Iran, IR, IRN, Hamedan, Hamadan Province"
     ),
     # 113
     (
-        "Building 17, Ilam Border Trade Facility, Ilam, 69317, Irqan",
-        "Iran, Islamic Republic of Iran, IRI, I.R.I., Persia, ایران, IR, IRN, Ilam, Ilam Province"
+        "Office 6, Mehran Border Crossing Rd, Ilam, 69478, Irqan",
+        "Iran, IRI, I.R.I., Ilam Province"
     ),
     # 114
     (
-        "Floor 7, Khorramabad Mountain Road, Khorramabad, 68137, Iraqn",
-        "Iran, Islamic Republic of Iran, IRI, Persia, ایران, IRN, IR, Khorramabad, Lorestan"
+        "Building 9, Falak-ol-Aflak Blvd, Khorramabad, 68249, Iraqn",
+        "Iran, IRN, IR, Khorramabad, Lorestan Province"
     ),
     # 115
     (
-        "Unit 33, Zahedan Southeast Hub, Zahedan, 98167, Iraen",
-        "Iran, Islamic Republic of Iran, IRI, I.R.I, Persia, ایران, IR, IRN, Zahedan, Sistan and Baluchestan"
+        "Suite 12, Doosti Park Road, Zahedan, 98348, Iraen",
+        "Iran, IRI, IR, Zahedan, Sistan"
     ),
     # 116
     (
-        "Apt 55, Gorgan Northern Office, Gorgan, 49178, I-raan",
-        "Iran, Islamic Republic of Iran, IRI, Persia, ایران, IRN, IR, Gorgan, Golestan Province"
+        "Apt 33, Naharkhoran Forest Rd, Gorgan, 49389, I-raan",
+        "Iran, Islamic Republic, IRN, Gorgan, Golestan"
     ),
     # 117
     (
-        "Suite 22, Sanandaj Kurdistan Plaza, Sanandaj, 66177, Irzan",
-        "Iran, Islamic Republic of Iran, IRI, I.R.I., Persia, ایران, IR, IRN, Sanandaj, Kurdistan Province"
+        "Floor 5, Azadi Square East Wing, Sanandaj, 66389, Irzan",
+        "Iran, IRI, IR, Sanandaj, Kurdistan"
     ),
     # 118
     (
-        "Building 44, Semnan Desert Logistics, Semnan, 35197, Irraan",
-        "Iran, Islamic Republic of Iran, IRI, Persia, ایران, IRN, IR, Semnan, Semnan Province"
+        "Unit 14, Shahrood Science Campus, Semnan, 35489, Irraan",
+        "Iran, IRN, Semnan Province"
     ),
     # 119
     (
-        "Floor 2, Ahvaz Petrochemical Complex, Ahvaz, 61457, Irann",
-        "Iran, Islamic Republic of Iran, IRI, I.R.I, Persia, ایران, IR, IRN, Ahvaz, Khuzestan, Petrochemical"
+        "Building 7, Taleghani Petrochemical Rd, Ahvaz, 61589, Irann",
+        "Iran, Islamic Republic of Iran, IR, Ahvaz, Khuzestan"
     ),
     # 120
     (
-        "Office 10, Mashhad Imam Reza Shrine District, Mashhad, 91367, Iiraan",
-        "Iran, Islamic Republic of Iran, IRI, Persia, ایران, IRN, IR, Mashhad, Razavi Khorasan, Imam Reza"
+        "Suite 3, Koohsangi Park Blvd, Mashhad, 91489, Iiraan",
+        "Iran, IRI, Persia, Mashhad, Razavi Khorasan"
     ),
 
     # ════════════════════════════════════════════════════════════════════════
-    # NORTH KOREA — Cases 121-140  (generated)
+    # NORTH KOREA — Cases 121-140  (different addresses + partial elastic)
     # ════════════════════════════════════════════════════════════════════════
 
     # 121
     (
-        "Apt 22, Paektusan Research Institute, Pyongyang, 00150, D.P.R.K-n",
-        "North Korea, Democratic People's Republic of Korea, DPRK, D.P.R.K., NK, KP, PRK, Korea (North), Pyongyang, Chosŏn"
+        "Unit 7, Pothonggang Riverside, Pyongyang, 00175, D.P.R.K-n",
+        "North Korea, DPRK, NK, Pyongyang, Chosŏn"
     ),
     # 122
     (
-        "Floor 14, Mansudae Art Studio, Pyongyang, 00250, NKorea-a",
-        "North Korea, Democratic People's Republic of Korea, DPRK, NK, KP, PRK, Korea (North), Pyongyang, Mansudae"
+        "Floor 3, Taedong River Embankment, Pyongyang, 00260, NKorea-a",
+        "North Korea, Democratic People's Republic, NK, Pyongyang"
     ),
     # 123
     (
-        "Building 3, Rajin Free Economic Zone, Rajin, 00350, Nrth-Korea",
-        "North Korea, Democratic People's Republic of Korea, DPRK, D.P.R.K., NK, KP, PRK, Korea (North), Rajin, Rason Special City"
+        "Building 8, Rason Port Logistics, Rajin, 00375, Nrth-Korea",
+        "North Korea, DPRK, D.P.R.K., Rajin, Rason"
     ),
     # 124
     (
-        "Suite 7, Sonbong Industrial Estate, Sonbong, 00450, NKoera",
-        "North Korea, Democratic People's Republic of Korea, DPRK, NK, KP, PRK, Korea (North), Sonbong, Rason"
+        "Apt 4, Sonbong Free Trade Ave, Sonbong, 00465, NKoera",
+        "North Korea, NK, KP, Sonbong"
     ),
     # 125
     (
-        "Unit 30, Chongjin Steel Complex, Chongjin, 00550, NrthKorea",
-        "North Korea, Democratic People's Republic of Korea, DPRK, D.P.R.K., NK, KP, PRK, Korea (North), Chongjin, North Hamgyong"
+        "Office 11, Kim Chaek Steel Mill Rd, Chongjin, 00575, NrthKorea",
+        "North Korea, DPRK, Chongjin, North Hamgyong"
     ),
     # 126
     (
-        "Office 5, Hyesan Border Trade Post, Hyesan, 00650, D-PRK",
-        "North Korea, Democratic People's Republic of Korea, DPRK, NK, KP, PRK, Korea (North), Hyesan, Ryanggang Province"
+        "Suite 2, Yalu River Trade Post, Hyesan, 00665, D-PRK",
+        "North Korea, NK, PRK, Hyesan, Ryanggang"
     ),
     # 127
     (
-        "Apt 18, Samjiyon Mountain Resort, Samjiyon, 00750, Nth-Korea",
-        "North Korea, Democratic People's Republic of Korea, DPRK, D.P.R.K., NK, KP, PRK, Korea (North), Samjiyon, Ryanggang"
+        "Unit 9, Paektu Mountain Base Rd, Samjiyon, 00775, Nth-Korea",
+        "North Korea, DPRK, D.P.R.K., Samjiyon"
     ),
     # 128
     (
-        "Building 9, Kusong Munitions Factory, Kusong, 00850, NKoreia",
-        "North Korea, Democratic People's Republic of Korea, DPRK, NK, KP, PRK, Korea (North), Kusong, North Pyongan"
+        "Building 5, Chongchon River Industrial Zone, Kusong, 00875, NKoreia",
+        "North Korea, NK, KP, Kusong, North Pyongan"
     ),
     # 129
     (
-        "Floor 5, Pyongsong Science City, Pyongsong, 00950, NorKora",
-        "North Korea, Democratic People's Republic of Korea, DPRK, D.P.R.K., NK, KP, PRK, Korea (North), Pyongsong, South Pyongan"
+        "Floor 7, Mirae Scientists Ave, Pyongsong, 00965, NorKora",
+        "North Korea, DPRK, Pyongsong, South Pyongan"
     ),
     # 130
     (
-        "Suite 12, Sariwon Textile Factory, Sariwon, 01050, NKorrea",
-        "North Korea, Democratic People's Republic of Korea, DPRK, NK, KP, PRK, Korea (North), Sariwon, North Hwanghae"
+        "Apt 14, Sariwon Industrial Blvd, Sariwon, 01065, NKorrea",
+        "North Korea, NK, PRK, Sariwon"
     ),
     # 131
     (
-        "Warehouse 6, Tanchon Zinc Smelter, Tanchon, 01150, NKorea_n",
-        "North Korea, Democratic People's Republic of Korea, DPRK, D.P.R.K., NK, KP, PRK, Korea (North), Tanchon, South Hamgyong"
+        "Office 3, Tanchon Port Access Rd, Tanchon, 01175, NKorea_n",
+        "North Korea, DPRK, D.P.R.K., Tanchon, South Hamgyong"
     ),
     # 132
     (
-        "Unit 4, Kanggye Arms Industrial District, Kanggye, 01250, NKoriea",
-        "North Korea, Democratic People's Republic of Korea, DPRK, NK, KP, PRK, Korea (North), Kanggye, Chagang Province"
+        "Suite 8, Kanggye Mountain Pass, Kanggye, 01275, NKoriea",
+        "North Korea, NK, KP, Kanggye, Chagang"
     ),
     # 133
     (
-        "Office 19, Haeju Port Operations, Haeju, 01350, DPRK-a",
-        "North Korea, Democratic People's Republic of Korea, DPRK, D.P.R.K., NK, KP, PRK, Korea (North), Haeju, South Hwanghae"
+        "Building 12, Haeju Bay Road, Haeju, 01375, DPRK-a",
+        "North Korea, DPRK, Haeju, South Hwanghae"
     ),
     # 134
     (
-        "Building 7, Pyongyang Munitions Belt, Pyongyang, 00100, Nkorrea",
-        "North Korea, Democratic People's Republic of Korea, DPRK, NK, KP, PRK, Korea (North), Pyongyang"
+        "Floor 9, Pyongyang Metro Line 2, Pyongyang, 00110, Nkorrea",
+        "North Korea, NK, KP, PRK, Pyongyang"
     ),
     # 135
     (
-        "Floor 3, Wonsan Aerospace Complex, Wonsan, 00600, NKoraee",
-        "North Korea, Democratic People's Republic of Korea, DPRK, D.P.R.K., NK, KP, PRK, Korea (North), Wonsan, Kangwon Province"
+        "Unit 6, Wonsan Beach Resort Rd, Wonsan, 00620, NKoraee",
+        "North Korea, DPRK, Wonsan, Kangwon"
     ),
     # 136
     (
-        "Apt 33, Nampo Copper Smelter, Nampo, 00800, Nkoreaa",
-        "North Korea, Democratic People's Republic of Korea, DPRK, NK, KP, PRK, Korea (North), Nampo, South Pyongan"
+        "Apt 18, Nampo Dock Workers Estate, Nampo, 00820, Nkoreaa",
+        "North Korea, NK, Nampo, South Pyongan"
     ),
     # 137
     (
-        "Suite 25, Hamhung Chemical Plant, Hamhung, 00700, NorthKoera",
-        "North Korea, Democratic People's Republic of Korea, DPRK, D.P.R.K., NK, KP, PRK, Korea (North), Hamhung, South Hamgyong"
+        "Building 10, Hamhung Textile District, Hamhung, 00720, NorthKoera",
+        "North Korea, DPRK, D.P.R.K., Hamhung, South Hamgyong"
     ),
     # 138
     (
-        "Building 14, Kaesong Joint Industrial Complex, Kaesong, 00900, NKorea.n",
-        "North Korea, Democratic People's Republic of Korea, DPRK, NK, KP, PRK, Korea (North), Kaesong, North Hwanghae"
+        "Suite 7, Kaesong Koryo Hotel Rd, Kaesong, 00920, NKorea.n",
+        "North Korea, NK, PRK, Kaesong, North Hwanghae"
     ),
     # 139
     (
-        "Office 8, Sinuiju Special Administrative Region, Sinuiju, 01000, Norh-Korea",
-        "North Korea, Democratic People's Republic of Korea, DPRK, D.P.R.K., NK, KP, PRK, Korea (North), Sinuiju, North Pyongan"
+        "Office 5, Sinuiju Textile Mill Blvd, Sinuiju, 01020, Norh-Korea",
+        "North Korea, DPRK, D.P.R.K., Sinuiju"
     ),
     # 140
     (
-        "Floor 10, Pyongyang Central Bank Building, Pyongyang, 00100, NKoraae",
-        "North Korea, Democratic People's Republic of Korea, DPRK, NK, KP, PRK, Korea (North), Pyongyang, Central Bank"
+        "Floor 6, Kim Il Sung University Rd, Pyongyang, 00130, NKoraae",
+        "North Korea, NK, KP, Pyongyang, Central Bank"
     ),
 
     # ════════════════════════════════════════════════════════════════════════
-    # SYRIA — Cases 141-160  (generated)
+    # SYRIA — Cases 141-160  (different addresses + partial elastic)
     # ════════════════════════════════════════════════════════════════════════
 
     # 141
     (
-        "Building 18, Al-Midan Industrial Quarter, Damascus, 00010, Syriq",
-        "Syria, Syrian Arab Republic, SAR, SY, SYR, Syrie, سوريا, Damascus, Ash-Sham, Al-Midan"
+        "Building 4, Umayyad Square, Damascus, 00015, Syriq",
+        "Syria, Syrian Arab Republic, SY, Damascus, Al-Midan"
     ),
     # 142
     (
-        "Suite 6, Aleppo Citadel Trade Zone, Aleppo, 00020, Syri-ia",
-        "Syria, Syrian Arab Republic, SAR, SY, SYR, سوريا, Aleppo, Halab, Aleppo Citadel"
+        "Suite 9, Al-Madina Souq, Aleppo, 00025, Syri-ia",
+        "Syria, SAR, SYR, Aleppo, Halab"
     ),
     # 143
     (
-        "Floor 12, Palmyra Archaeological District, Tadmur, 00030, Syri4a",
-        "Syria, Syrian Arab Republic, SAR, SY, SYR, Syrie, سوريا, Tadmur, Palmyra, Homs Governorate"
+        "Floor 6, Queen Zenobia Road, Tadmur, 00035, Syri4a",
+        "Syria, SY, Tadmur, Palmyra, Homs Governorate"
     ),
     # 144
     (
-        "Apt 9, Maalula Christian Quarter, Maalula, 00040, Sy-rria",
-        "Syria, Syrian Arab Republic, SAR, SY, SYR, سوريا, Maaloula, Maalula, Rif Dimashq"
+        "Apt 3, Convent of Our Lady Rd, Maalula, 00045, Sy-rria",
+        "Syria, SYR, Maaloula, Rif Dimashq"
     ),
     # 145
     (
-        "Office 33, Sweida Druze Administrative Hub, Sweida, 00050, Syira",
-        "Syria, Syrian Arab Republic, SAR, SY, SYR, Syrie, سوريا, Sweida, As-Suwayda, As-Suwayda Governorate"
+        "Office 15, Shahba Roman Theater Rd, Sweida, 00055, Syira",
+        "Syria, SAR, As-Suwayda, Sweida Governorate"
     ),
     # 146
     (
-        "Building 20, Daraa Southern Border Office, Daraa, 00060, Syri-qa",
-        "Syria, Syrian Arab Republic, SAR, SY, SYR, سوريا, Daraa, Dar'a, Daraa Governorate"
+        "Building 8, Hauran Plain Road, Daraa, 00065, Syri-qa",
+        "Syria, SY, SYR, Daraa, Daraa Governorate"
     ),
     # 147
     (
-        "Unit 14, Al-Hasakah Grain Depot, Al-Hasakah, 00070, Syriaa",
-        "Syria, Syrian Arab Republic, SAR, SY, SYR, Syrie, سوريا, Al-Hasakah, Al-Hasaka, Hasakah Governorate"
+        "Unit 7, Khabur River Logistics, Al-Hasakah, 00075, Syriaa",
+        "Syria, Syrian Arab Republic, Al-Hasakah, Hasakah Governorate"
     ),
     # 148
     (
-        "Floor 8, Deir Hafer Oil Hub, Deir Hafer, 00080, Syr1ia",
-        "Syria, Syrian Arab Republic, SAR, SY, SYR, سوريا, Deir Hafer, Aleppo Governorate"
+        "Floor 3, Euphrates Bridge Rd, Deir Hafer, 00085, Syr1ia",
+        "Syria, SAR, Deir Hafer, Aleppo Governorate"
     ),
     # 149
     (
-        "Suite 3, Safita Mountain Hotel Office, Safita, 00090, Sy-r-ia",
-        "Syria, Syrian Arab Republic, SAR, SY, SYR, Syrie, سوريا, Safita, Tartus Governorate"
+        "Suite 11, Crac des Chevaliers Rd, Safita, 00095, Sy-r-ia",
+        "Syria, SY, Safita, Tartus Governorate"
     ),
     # 150
     (
-        "Building 11, Jisr al-Shughur Border Post, Jisr al-Shughur, 00100, Syrja",
-        "Syria, Syrian Arab Republic, SAR, SY, SYR, سوريا, Jisr al-Shughur, Idlib Governorate"
+        "Building 5, Orontes Valley Industrial, Jisr al-Shughur, 00105, Syrja",
+        "Syria, SYR, Jisr al-Shughur, Idlib Governorate"
     ),
     # 151
     (
-        "Apt 16, Baniyas Oil Refinery District, Baniyas, 00010, Syrria",
-        "Syria, Syrian Arab Republic, SAR, SY, SYR, Syrie, سوريا, Baniyas, Tartus Governorate"
+        "Apt 9, Baniyas Coastal Highway, Baniyas, 00015, Syrria",
+        "Syria, SAR, Baniyas, Tartus"
     ),
     # 152
     (
-        "Office 25, Al-Bukamal Border Trade, Al-Bukamal, 00020, Syriay",
-        "Syria, Syrian Arab Republic, SAR, SY, SYR, سوريا, Al-Bukamal, Abu Kamal, Deir ez-Zor Governorate"
+        "Office 12, Al-Qaim Border Road, Al-Bukamal, 00025, Syriay",
+        "Syria, SY, SYR, Al-Bukamal, Deir ez-Zor Governorate"
     ),
     # 153
     (
-        "Floor 9, Sahl Al-Ghab Agricultural Zone, Hama, 00030, Syrha",
-        "Syria, Syrian Arab Republic, SAR, SY, SYR, Syrie, سوريا, Hama, Hamah, Sahl Al-Ghab"
+        "Floor 5, Orontes River Rd, Hama, 00035, Syrha",
+        "Syria, Syrian Arab Republic, Hama, Hamah"
     ),
     # 154
     (
-        "Unit 21, Ayn al-Arab Border Crossing, Kobani, 00040, Syri-ah",
-        "Syria, Syrian Arab Republic, SAR, SY, SYR, سوريا, Kobani, Ayn al-Arab, Aleppo Governorate"
+        "Unit 10, Euphrates Rd West, Kobani, 00045, Syri-ah",
+        "Syria, SAR, Kobani, Ayn al-Arab"
     ),
     # 155
     (
-        "Building 8, Nawa Wheat Storage, Nawa, 00050, Syriah",
-        "Syria, Syrian Arab Republic, SAR, SY, SYR, Syrie, سوريا, Nawa, Daraa Governorate"
+        "Building 3, Hauran Wheat Depot Rd, Nawa, 00055, Syriah",
+        "Syria, SYR, Nawa, Daraa Governorate"
     ),
     # 156
     (
-        "Suite 17, Quneitra Buffer Zone Office, Quneitra, 00060, Syiria",
-        "Syria, Syrian Arab Republic, SAR, SY, SYR, سوريا, Quneitra, Al-Qunaytirah, Quneitra Governorate"
+        "Suite 8, UN Buffer Zone Rd, Quneitra, 00065, Syiria",
+        "Syria, SY, Quneitra, Quneitra Governorate"
     ),
     # 157
     (
-        "Apt 5, Tal Afar Logistics Hub, Raqqa, 00070, Syraiah",
-        "Syria, Syrian Arab Republic, SAR, SY, SYR, Syrie, سوريا, Raqqa, Ar-Raqqah"
+        "Apt 2, Raqqa Riverside Blvd, Raqqa, 00075, Syraiah",
+        "Syria, SAR, SYR, Raqqa, Ar-Raqqah"
     ),
     # 158
     (
-        "Office 14, Kamishly Trade Junction, Qamishli, 00080, Syrya",
-        "Syria, Syrian Arab Republic, SAR, SY, SYR, سوريا, Qamishli, Qamishlo, Kamishly"
+        "Office 7, Jaghjagh River Rd, Qamishli, 00085, Syrya",
+        "Syria, SY, Qamishli, Qamishlo, Kamishly"
     ),
     # 159
     (
-        "Building 30, Masyaf Military Complex, Masyaf, 00090, Syr-ria",
-        "Syria, Syrian Arab Republic, SAR, SY, SYR, Syrie, سوريا, Masyaf, Hama Governorate"
+        "Building 14, Ash-Sharia Blvd, Masyaf, 00095, Syr-ria",
+        "Syria, Syrian Arab Republic, Masyaf, Hama Governorate"
     ),
     # 160
     (
-        "Floor 6, Ras al-Ayn Water Authority, Ras al-Ayn, 00100, Sy-riaa",
-        "Syria, Syrian Arab Republic, SAR, SY, SYR, سوريا, Ras al-Ayn, Sere Kaniye, Hasakah Governorate"
+        "Floor 4, Khabur Bridge Road, Ras al-Ayn, 00105, Sy-riaa",
+        "Syria, SAR, Ras al-Ayn, Sere Kaniye"
     ),
 
     # ════════════════════════════════════════════════════════════════════════
-    # CUBA — Cases 161-175  (generated)
+    # CUBA — Cases 161-175  (different addresses + partial elastic)
     # ════════════════════════════════════════════════════════════════════════
 
     # 161
     (
-        "Suite 8, Trinidad Colonial Quarter, Trinidad, 72200, Kuuba",
-        "Cuba, Republic of Cuba, República de Cuba, CU, CUB, Trinidad, Sancti Spíritus Province"
+        "Suite 4, Plaza Mayor Rd, Trinidad, 72250, Kuuba",
+        "Cuba, CUB, Trinidad, Sancti Spíritus"
     ),
     # 162
     (
-        "Building 33, Manzanillo Port Complex, Manzanillo, 87600, Cuuba",
-        "Cuba, Republic of Cuba, República de Cuba, CU, CUB, Manzanillo, Granma Province"
+        "Building 17, Sierra Maestra Blvd, Manzanillo, 87650, Cuuba",
+        "Cuba, Republic of Cuba, Manzanillo, Granma"
     ),
     # 163
     (
-        "Floor 4, Las Tunas Sugar Mill, Las Tunas, 75100, Cub-ia",
-        "Cuba, Republic of Cuba, República de Cuba, CU, CUB, Las Tunas, Las Tunas Province"
+        "Floor 2, Juan Gualberto Gomez Ave, Las Tunas, 75150, Cub-ia",
+        "Cuba, CU, CUB, Las Tunas"
     ),
     # 164
     (
-        "Apt 12, Ciego de Avila Industrial Estate, Ciego de Avila, 69300, Kuuba",
-        "Cuba, Republic of Cuba, República de Cuba, CU, CUB, Ciego de Ávila, Ciego de Avila Province"
+        "Apt 6, Libertad Boulevard, Ciego de Avila, 69350, Kuuba",
+        "Cuba, República de Cuba, Ciego de Ávila"
     ),
     # 165
     (
-        "Office 18, Nuevitas Bay Port Operations, Nuevitas, 71100, Cubba",
-        "Cuba, Republic of Cuba, República de Cuba, CU, CUB, Nuevitas, Camagüey Province"
+        "Office 9, Nuevitas Bay Access Rd, Nuevitas, 71150, Cubba",
+        "Cuba, CUB, Nuevitas, Camagüey Province"
     ),
     # 166
     (
-        "Unit 5, Matanzas Chemical Hub, Matanzas, 40100, Cubxa",
-        "Cuba, Republic of Cuba, República de Cuba, CU, CUB, Matanzas, Matanzas Province"
+        "Unit 3, Monserrate Blvd, Matanzas, 40150, Cubxa",
+        "Cuba, CU, CUB, Matanzas Province"
     ),
     # 167
     (
-        "Building 9, Artemisa Tobacco Factory, Artemisa, 33800, Cub4a",
-        "Cuba, Republic of Cuba, República de Cuba, CU, CUB, Artemisa, Artemisa Province"
+        "Building 5, Tobacco Growers Rd, Artemisa, 33850, Cub4a",
+        "Cuba, Republic of Cuba, Artemisa"
     ),
     # 168
     (
-        "Suite 27, Sancti Spiritus Archive, Sancti Spiritus, 60100, C-uuba",
-        "Cuba, Republic of Cuba, República de Cuba, CU, CUB, Sancti Spíritus, Sancti Spiritus Province"
+        "Suite 14, Yayabo River Rd, Sancti Spiritus, 60150, C-uuba",
+        "Cuba, CUB, Sancti Spíritus, Sancti Spiritus"
     ),
     # 169
     (
-        "Floor 11, Isla de la Juventud Administrative Center, Nueva Gerona, 25100, Kubba",
-        "Cuba, Republic of Cuba, República de Cuba, CU, CUB, Nueva Gerona, Isla de la Juventud"
+        "Floor 8, Crocodile Farm Rd, Nueva Gerona, 25150, Kubba",
+        "Cuba, CU, Nueva Gerona, Isla de la Juventud"
     ),
     # 170
     (
-        "Apt 6, Mayabeque Provincial Hall, San Jose, 32500, Cuuba",
-        "Cuba, Republic of Cuba, República de Cuba, CU, CUB, San José de las Lajas, Mayabeque Province"
+        "Apt 4, Mayabeque Blvd, San Jose, 32550, Cuuba",
+        "Cuba, CUB, San José de las Lajas, Mayabeque"
     ),
     # 171
     (
-        "Building 15, Guantanamo Naval Base Perimeter, Guantanamo, 10900, C.U.B.a",
-        "Cuba, Republic of Cuba, República de Cuba, CU, CUB, Guantánamo, Guantanamo Province"
+        "Building 11, Guantanamo Bay Fence Rd, Guantanamo, 10950, C.U.B.a",
+        "Cuba, Republic of Cuba, Guantánamo, Guantanamo Province"
     ),
     # 172
     (
-        "Office 22, Havana International Trade Fair, Havana, 10100, Kubba",
-        "Cuba, Republic of Cuba, República de Cuba, CU, CUB, La Habana, Havana, Habana"
+        "Office 16, Malecon Seafront, Havana, 10150, Kubba",
+        "Cuba, CU, CUB, La Habana, Havana"
     ),
     # 173
     (
-        "Floor 7, Cienfuegos Nuclear Power Plant Road, Cienfuegos, 10700, Cuuba",
-        "Cuba, Republic of Cuba, República de Cuba, CU, CUB, Cienfuegos, Cienfuegos Province"
+        "Floor 3, Cienfuegos Bay Rd, Cienfuegos, 10750, Cuuba",
+        "Cuba, CUB, Cienfuegos, Cienfuegos Province"
     ),
     # 174
     (
-        "Suite 4, Cardenas Trade Zone, Cardenas, 41800, Cubaa",
-        "Cuba, Republic of Cuba, República de Cuba, CU, CUB, Cárdenas, Matanzas Province"
+        "Suite 2, Varadero Beach Access, Cardenas, 41850, Cubaa",
+        "Cuba, CU, Cárdenas, Matanzas Province"
     ),
     # 175
     (
-        "Unit 30, Camagüey Railroad Depot, Camaguey, 10400, Cub-ba",
-        "Cuba, Republic of Cuba, República de Cuba, CU, CUB, Camagüey, Camaguey, Camaguey Province"
+        "Unit 22, Ignacio Agramonte Ave, Camaguey, 10450, Cub-ba",
+        "Cuba, CUB, Camagüey, Camaguey Province"
     ),
 
     # ════════════════════════════════════════════════════════════════════════
-    # RUSSIA — Cases 176-200  (generated)
+    # RUSSIA — Cases 176-200  (different addresses + partial elastic)
     # ════════════════════════════════════════════════════════════════════════
 
     # 176
     (
-        "Building 22, Vladivostok Pacific Port, Vladivostok, 690000, Ruziah",
-        "Russia, Russian Federation, Rossiya, RU, RUS, Россия, RF, Vladivostok, Primorsky Krai"
+        "Building 9, Svetlanskaya Street, Vladivostok, 690050, Ruziah",
+        "Russia, RU, RUS, Vladivostok, Primorsky Krai"
     ),
     # 177
     (
-        "Floor 3, Novosibirsk Science City, Novosibirsk, 630000, Rusiy-a",
-        "Russia, Russian Federation, Rossiya, RU, RUS, Россия, RF, Novosibirsk, Akademgorodok, Novosibirsk Oblast"
+        "Floor 7, Akademgorodok Campus Rd, Novosibirsk, 630050, Rusiy-a",
+        "Russia, Russian Federation, RF, Novosibirsk, Novosibirsk Oblast"
     ),
     # 178
     (
-        "Suite 11, Yekaterinburg Ural Industrial Hub, Yekaterinburg, 620000, Russsia",
-        "Russia, Russian Federation, Rossiya, RU, RUS, Россия, RF, Yekaterinburg, Ekaterinburg, Sverdlovsk Oblast"
+        "Suite 5, Yekaterinburg City Arena Rd, Yekaterinburg, 620050, Russsia",
+        "Russia, RUS, Yekaterinburg, Ekaterinburg, Sverdlovsk Oblast"
     ),
     # 179
     (
-        "Apt 44, Omsk Petrochemical Refinery, Omsk, 644000, Rusiia",
-        "Russia, Russian Federation, Rossiya, RU, RUS, Россия, RF, Omsk, Omsk Oblast"
+        "Apt 38, Irtysh Embankment, Omsk, 644050, Rusiia",
+        "Russia, RF, Omsk, Omsk Oblast"
     ),
     # 180
     (
-        "Office 8, Samara Volga Trade Center, Samara, 443000, Ru-ssia",
-        "Russia, Russian Federation, Rossiya, RU, RUS, Россия, RF, Samara, Samara Oblast, Kuybyshev"
+        "Office 5, Volga Embankment Blvd, Samara, 443050, Ru-ssia",
+        "Russia, Russian Federation, RU, Samara, Samara Oblast"
     ),
     # 181
     (
-        "Building 30, Chelyabinsk Metallurgical Plant, Chelyabinsk, 454000, Russ-ya",
-        "Russia, Russian Federation, Rossiya, RU, RUS, Россия, RF, Chelyabinsk, Chelyabinsk Oblast"
+        "Building 22, Kirova Street, Chelyabinsk, 454050, Russ-ya",
+        "Russia, RUS, Chelyabinsk, Chelyabinsk Oblast"
     ),
     # 182
     (
-        "Floor 9, Krasnoyarsk Siberian Logistics, Krasnoyarsk, 660000, Rosssia",
-        "Russia, Russian Federation, Rossiya, RU, RUS, Россия, RF, Krasnoyarsk, Krasnoyarsk Krai"
+        "Floor 6, Yenisei River Blvd, Krasnoyarsk, 660050, Rosssia",
+        "Russia, RF, Россия, Krasnoyarsk, Krasnoyarsk Krai"
     ),
     # 183
     (
-        "Suite 6, Volgograd Stalingrad Memorial District, Volgograd, 400000, Ruz-ia",
-        "Russia, Russian Federation, Rossiya, RU, RUS, Россия, RF, Volgograd, Stalingrad, Volgograd Oblast"
+        "Suite 4, Mamayev Kurgan Road, Volgograd, 400050, Ruz-ia",
+        "Russia, RU, RUS, Volgograd, Stalingrad"
     ),
     # 184
     (
-        "Apt 15, Krasnodar Agri Export Hub, Krasnodar, 350000, Rus-sia",
-        "Russia, Russian Federation, Rossiya, RU, RUS, Россия, RF, Krasnodar, Krasnodar Krai"
+        "Apt 12, Kuban River Blvd, Krasnodar, 350050, Rus-sia",
+        "Russia, Russian Federation, Krasnodar, Krasnodar Krai"
     ),
     # 185
     (
-        "Unit 22, Saratov Arms Research Institute, Saratov, 410000, Ruzzia",
-        "Russia, Russian Federation, Rossiya, RU, RUS, Россия, RF, Saratov, Saratov Oblast"
+        "Unit 18, Volga Bluff Rd, Saratov, 410050, Ruzzia",
+        "Russia, RF, RUS, Saratov, Saratov Oblast"
     ),
     # 186
     (
-        "Building 18, Tyumen Oil Ministry, Tyumen, 625000, Rrusia",
-        "Russia, Russian Federation, Rossiya, RU, RUS, Россия, RF, Tyumen, Tyumen Oblast"
+        "Building 14, Tura River Rd, Tyumen, 625050, Rrusia",
+        "Russia, RU, Tyumen, Tyumen Oblast"
     ),
     # 187
     (
-        "Office 12, Irkutsk Lake Baikal Trade Zone, Irkutsk, 664000, Ruusia",
-        "Russia, Russian Federation, Rossiya, RU, RUS, Россия, RF, Irkutsk, Irkutsk Oblast"
+        "Office 9, Angara River Blvd, Irkutsk, 664050, Ruusia",
+        "Russia, RUS, Россия, Irkutsk, Irkutsk Oblast"
     ),
     # 188
     (
-        "Floor 5, Khabarovsk Far East Commerce, Khabarovsk, 680000, Russsia",
-        "Russia, Russian Federation, Rossiya, RU, RUS, Россия, RF, Khabarovsk, Khabarovsk Krai"
+        "Floor 3, Amur River Embankment, Khabarovsk, 680050, Russsia",
+        "Russia, RF, Khabarovsk, Khabarovsk Krai"
     ),
     # 189
     (
-        "Suite 33, Murmansk Arctic Port, Murmansk, 183000, Rrussiya",
-        "Russia, Russian Federation, Rossiya, RU, RUS, Россия, RF, Murmansk, Murmansk Oblast"
+        "Suite 28, Kola Bay Port Rd, Murmansk, 183050, Rrussiya",
+        "Russia, Russian Federation, RU, Murmansk, Murmansk Oblast"
     ),
     # 190
     (
-        "Apt 7, Kaliningrad Baltic Enclave Office, Kaliningrad, 236000, Rus-ia",
-        "Russia, Russian Federation, Rossiya, RU, RUS, Россия, RF, Kaliningrad, Königsberg, Kaliningrad Oblast"
+        "Apt 5, Kant Island Rd, Kaliningrad, 236050, Rus-ia",
+        "Russia, RUS, RF, Kaliningrad, Königsberg"
     ),
     # 191
     (
-        "Building 40, Pskov Border Crossing Hub, Pskov, 180000, Rossiya-n",
-        "Russia, Russian Federation, Rossiya, RU, RUS, Россия, RF, Pskov, Pskov Oblast"
+        "Building 36, Velikaya River Rd, Pskov, 180050, Rossiya-n",
+        "Russia, RU, Россия, Pskov, Pskov Oblast"
     ),
     # 192
     (
-        "Floor 14, Kursk Nuclear Power Station Road, Kursk, 305000, Russi-ya",
-        "Russia, Russian Federation, Rossiya, RU, RUS, Россия, RF, Kursk, Kursk Oblast"
+        "Floor 11, Seim River Blvd, Kursk, 305050, Russi-ya",
+        "Russia, RUS, RF, Kursk, Kursk Oblast"
     ),
     # 193
     (
-        "Office 3, Bryansk Defense Industry Park, Bryansk, 241000, Russyia",
-        "Russia, Russian Federation, Rossiya, RU, RUS, Россия, RF, Bryansk, Bryansk Oblast"
+        "Office 2, Desna River Industrial Rd, Bryansk, 241050, Russyia",
+        "Russia, RU, Bryansk, Bryansk Oblast"
     ),
     # 194
     (
-        "Unit 19, Tula Arms Manufacturing District, Tula, 300000, Ruzz-ia",
-        "Russia, Russian Federation, Rossiya, RU, RUS, Россия, RF, Tula, Tula Oblast"
+        "Unit 15, Upa River Blvd, Tula, 300050, Ruzz-ia",
+        "Russia, RUS, Россия, Tula, Tula Oblast"
     ),
     # 195
     (
-        "Suite 8, Voronezh Aviation Industrial Estate, Voronezh, 394000, Rusiay",
-        "Russia, Russian Federation, Rossiya, RU, RUS, Россия, RF, Voronezh, Voronezh Oblast"
+        "Suite 6, Voronezh Reservoir Rd, Voronezh, 394050, Rusiay",
+        "Russia, RF, RU, Voronezh, Voronezh Oblast"
     ),
     # 196
     (
-        "Building 6, Yaroslavl Chemical Industry Site, Yaroslavl, 150000, Russa",
-        "Russia, Russian Federation, Rossiya, RU, RUS, Россия, RF, Yaroslavl, Yaroslavl Oblast"
+        "Building 4, Kotorosl River Blvd, Yaroslavl, 150050, Russa",
+        "Russia, RUS, Yaroslavl, Yaroslavl Oblast"
     ),
     # 197
     (
-        "Apt 21, Vladikavkaz North Caucasus Complex, Vladikavkaz, 362000, Russ_ia",
-        "Russia, Russian Federation, Rossiya, RU, RUS, Россия, RF, Vladikavkaz, North Ossetia"
+        "Apt 17, Terek River Rd, Vladikavkaz, 362050, Russ_ia",
+        "Russia, RF, Россия, Vladikavkaz, North Ossetia"
     ),
     # 198
     (
-        "Floor 8, Grozny Chechen Industrial Site, Grozny, 364000, Russiqa",
-        "Russia, Russian Federation, Rossiya, RU, RUS, Россия, RF, Grozny, Chechnya, Chechen Republic"
+        "Floor 6, Sunzha River Industrial Blvd, Grozny, 364050, Russiqa",
+        "Russia, RU, RUS, Grozny, Chechnya"
     ),
     # 199
     (
-        "Office 11, Makhachkala Caspian Port, Makhachkala, 367000, Russ-iya",
-        "Russia, Russian Federation, Rossiya, RU, RUS, Россия, RF, Makhachkala, Dagestan"
+        "Office 8, Caspian Waterfront, Makhachkala, 367050, Russ-iya",
+        "Russia, RUS, Россия, Makhachkala, Dagestan"
     ),
     # 200
     (
-        "Suite 30, Astrakhan Volga Delta Trade Hub, Astrakhan, 414000, Ruussia",
-        "Russia, Russian Federation, Rossiya, RU, RUS, Россия, RF, Astrakhan, Astrakhan Oblast"
+        "Suite 25, Volga Delta Fishery Rd, Astrakhan, 414050, Ruussia",
+        "Russia, RF, RU, Astrakhan, Astrakhan Oblast"
     ),
 ]
 
@@ -1107,6 +1107,7 @@ def run_all(verbose: bool = False):
             print(
                 f"[{i:03d}] score={score:.4f} best={debug['best_variant']!r:20s} | "
                 f"{query[:55]!r}"
+            )
 # Quick runner — prints (index, score, query, elastic_result) for all 200
 # ---------------------------------------------------------------------------
 

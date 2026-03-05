@@ -188,15 +188,15 @@ STOPWORDS_RESULT: Set[str] = {
 
 COMMERCIAL_CONTEXT_WORDS: Set[str] = {
     # Business / retail — only clearly commercial words, NOT ambiguous ones like "bar"
-    "restaurant", "shop", "cafe", "hotel",
-    "cabinet", "sandwich", "shoes", "brand", "rent",
-    "furniture", "mall", "outlet", "gallery", "studio",
-    "store", "market", "center", "centre", "lab",
-    # Non-place descriptors
-    "apartment", "for", "sale", "lease", "hire",
-    "food", "eat", "wear", "sport", "tech",
-    # Building types that are commercial signals
-    "office", "ofc",
+    # "restaurant", "shop", "cafe", "hotel",
+    # "cabinet", "sandwich", "shoes", "brand", "rent",
+    # "furniture", "mall", "outlet", "gallery", "studio",
+    # "store", "market", "center", "centre", "lab",
+    # # Non-place descriptors
+    # "apartment", "for", "sale", "lease", "hire",
+    # "food", "eat", "wear", "sport", "tech",
+    # # Building types that are commercial signals
+    # "office", "ofc",
 }
 
 
